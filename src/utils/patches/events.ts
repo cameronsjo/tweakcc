@@ -344,73 +344,44 @@ export const findToolBeforeHookLocation = (
  * Sub-patch 2: Inject tool:before and tool:after events
  * This wraps tool execution to emit events
  *
- * ? UNVERIFIED: These patterns are speculative:
- *   - /case\s*["']tool_use["']\s*:/ - assumes tool_use case exists
- *   - /(const|let|var)\s+([$\w]+)\s*=\s*await\s+([$\w]+)\(/ - assumes await pattern
+ * ✓ VERIFIED: Pattern found at position 5327809 in cli.js 2.0.55:
+ *   let Y=Z.input;...let J=await I.run(Y);return{type:"tool_result",tool_use_id:Z.id,content:J}
  *
- * TODO: Run `npx tweakcc --analyze` to verify these patterns exist
+ * Variables:
+ *   Z = tool use object (has Z.id, Z.input, Z.name)
+ *   I = tool implementation (has I.run, I.parse)
+ *   Y = input to tool (parsed from Z.input)
+ *   J = result from tool execution
  */
 export const writeToolLifecycleEvents = (oldFile: string): string | null => {
-  // Find the pattern where tools are executed
-  // In CC, this is typically in the query handler or tool executor
-
-  // Look for tool use content block processing
-  const toolUsePattern = /case\s*["']tool_use["']\s*:/;
-  const match = oldFile.match(toolUsePattern);
+  // Verified pattern: let J=await I.run(Y);return{type:"tool_result",tool_use_id:Z.id,content:J}
+  // We need to wrap the I.run(Y) call to emit before/after events
+  const toolRunPattern = /let\s+([$\w]+)=await\s+([$\w]+)\.run\(([$\w]+)\);return\{type:"tool_result",tool_use_id:([$\w]+)\.id,content:([$\w]+)\}/;
+  const match = oldFile.match(toolRunPattern);
 
   if (!match || match.index === undefined) {
-    console.error('patch: events: writeToolLifecycleEvents: could not find tool_use case');
+    console.error('patch: events: writeToolLifecycleEvents: could not find verified tool.run pattern');
     return null;
   }
 
-  // Find the next statement after case "tool_use":
-  // We want to inject our event emission here
-  const afterCase = oldFile.slice(match.index + match[0].length, match.index + match[0].length + 500);
+  const resultVar = match[1]; // J
+  const toolImplVar = match[2]; // I
+  const inputVar = match[3]; // Y
+  const toolUseVar = match[4]; // Z
+  const returnContentVar = match[5]; // J
 
-  // Look for the tool execution
-  const execPattern = /(const|let|var)\s+([$\w]+)\s*=\s*await\s+([$\w]+)\(/;
-  const execMatch = afterCase.match(execPattern);
+  // Replace the tool execution with wrapped version that emits events
+  const originalCode = match[0];
+  const newCode = `TWEAKCC_EVENTS.emit('tool:before',{toolName:${toolUseVar}.name,toolId:${toolUseVar}.id,input:${inputVar}});let ${resultVar}=await ${toolImplVar}.run(${inputVar});TWEAKCC_EVENTS.emit('tool:after',{toolName:${toolUseVar}.name,toolId:${toolUseVar}.id,result:${returnContentVar}});return{type:"tool_result",tool_use_id:${toolUseVar}.id,content:${returnContentVar}}`;
 
-  if (!execMatch || execMatch.index === undefined) {
-    // Try simpler pattern
-    const simplePattern = /await\s+([$\w]+)\(/;
-    const simpleMatch = afterCase.match(simplePattern);
+  const newFile = oldFile.replace(originalCode, newCode);
 
-    if (!simpleMatch || simpleMatch.index === undefined) {
-      console.error('patch: events: writeToolLifecycleEvents: could not find tool execution');
-      return null;
-    }
-
-    const insertPoint = match.index + match[0].length + simpleMatch.index;
-    // simpleMatch[1] contains the tool function name
-
-    // Inject event emission before the await
-    const beforeCode = `TWEAKCC_EVENTS.emit('tool:before',{toolName:'unknown'});`;
-
-    const newFile = oldFile.slice(0, insertPoint) + beforeCode + oldFile.slice(insertPoint);
-
-    showDiff(oldFile, newFile, beforeCode, insertPoint, insertPoint);
-
-    return newFile;
+  if (newFile === oldFile) {
+    console.error('patch: events: writeToolLifecycleEvents: replacement failed');
+    return null;
   }
 
-  const insertPoint = match.index + match[0].length + execMatch.index;
-  const resultVar = execMatch[2];
-  // execMatch[3] contains the tool function name
-
-  // We need to wrap the execution
-  const beforeCode = `TWEAKCC_EVENTS.emit('tool:before',{});`;
-
-  let newFile = oldFile.slice(0, insertPoint) + beforeCode + oldFile.slice(insertPoint);
-
-  // Now find where to inject after (after the assignment completes)
-  const assignmentEnd = newFile.indexOf(';', insertPoint + beforeCode.length);
-  if (assignmentEnd !== -1) {
-    const afterCode = `TWEAKCC_EVENTS.emit('tool:after',{result:${resultVar}});`;
-    newFile = newFile.slice(0, assignmentEnd + 1) + afterCode + newFile.slice(assignmentEnd + 1);
-
-    showDiff(oldFile, newFile, beforeCode + '...' + afterCode, insertPoint, assignmentEnd + 1);
-  }
+  showDiff(oldFile, newFile, newCode, match.index, match.index + originalCode.length);
 
   return newFile;
 };

@@ -91,10 +91,11 @@ export const analyzeCliJs = (
   // Search for potential hook points
   // =========================================================================
 
-  // Tool-related patterns
+  // Tool-related patterns - VERIFIED patterns from cli.js 2.0.55
   searchForHookPoints(report, content, 'tool_use case', /case\s*["']tool_use["']\s*:/g);
-  searchForHookPoints(report, content, 'tool execution await', /await\s+([$\w]+)\(([$\w]+)\.input\)/g);
-  searchForHookPoints(report, content, 'tool result return', /return\s*\{\s*type:\s*["']tool_result["']/g);
+  searchForHookPoints(report, content, 'tool.run pattern (VERIFIED)', /let\s+[$\w]+=await\s+[$\w]+\.run\([$\w]+\);return\{type:"tool_result"/g);
+  searchForHookPoints(report, content, 'tool input parse (VERIFIED)', /let\s+[$\w]+=[$\w]+\.input;if\("parse"in/g);
+  searchForHookPoints(report, content, 'tool result return (VERIFIED)', /return\{type:"tool_result",tool_use_id:[$\w]+\.id,content:[$\w]+\}/g);
   searchForHookPoints(report, content, 'tool name check', /if\(([$\w]+)\.name===["'](\w+)["']\)/g);
 
   // Message-related patterns

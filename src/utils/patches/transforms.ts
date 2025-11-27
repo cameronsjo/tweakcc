@@ -364,24 +364,32 @@ export const writeResponseTransform = (oldFile: string): string | null => {
 
 /**
  * Sub-patch 4: Inject tool:input transform hook
+ *
+ * ✓ VERIFIED: Pattern found at position 5327809 in cli.js 2.0.55:
+ *   let Y=Z.input;if("parse"in I&&I.parse)Y=I.parse(Y);let J=await I.run(Y)
+ *
+ * We intercept after the initial assignment: let Y=Z.input;
+ * And wrap Y before it's used in I.run(Y)
  */
 export const writeToolInputTransform = (oldFile: string): string | null => {
-  // Find tool input processing
-  // This is where tool.input or toolInput is passed to execution
-  const toolInputPattern = /await\s+([$\w]+)\(([$\w]+)\.input\)/;
+  // Verified pattern: let Y=Z.input;if("parse"in I&&I.parse)Y=I.parse(Y);let J=await I.run(Y)
+  // We need to wrap the input (Y) with transform before it goes to I.run()
+  const toolInputPattern = /let\s+([$\w]+)=([$\w]+)\.input;if\("parse"in\s+([$\w]+)&&\3\.parse\)\1=\3\.parse\(\1\);let\s+([$\w]+)=await\s+\3\.run\(\1\)/;
   const match = oldFile.match(toolInputPattern);
 
   if (!match || match.index === undefined) {
-    console.log('patch: transforms: writeToolInputTransform: could not find tool input pattern');
+    console.log('patch: transforms: writeToolInputTransform: could not find verified tool input pattern');
     return oldFile;
   }
 
-  const funcName = match[1];
-  const toolVar = match[2];
+  const inputVar = match[1]; // Y
+  const toolUseVar = match[2]; // Z
+  const toolImplVar = match[3]; // I
+  const resultVar = match[4]; // J
   const originalText = match[0];
 
-  // Wrap the input with transform
-  const newText = `await ${funcName}(TWEAKCC_TRANSFORMS.hasTransforms('tool:input')?TWEAKCC_TRANSFORMS.run('tool:input',${toolVar}.input,{toolName:${toolVar}.name}):${toolVar}.input)`;
+  // Wrap the input with transform after parse but before run
+  const newText = `let ${inputVar}=${toolUseVar}.input;if("parse"in ${toolImplVar}&&${toolImplVar}.parse)${inputVar}=${toolImplVar}.parse(${inputVar});${inputVar}=TWEAKCC_TRANSFORMS.hasTransforms('tool:input')?TWEAKCC_TRANSFORMS.run('tool:input',${inputVar},{toolName:${toolUseVar}.name}):${inputVar};let ${resultVar}=await ${toolImplVar}.run(${inputVar})`;
 
   const newFile = oldFile.replace(originalText, newText);
 
@@ -396,22 +404,28 @@ export const writeToolInputTransform = (oldFile: string): string | null => {
 
 /**
  * Sub-patch 5: Inject tool:output transform hook
+ *
+ * ✓ VERIFIED: Pattern found at position 5327839 in cli.js 2.0.55:
+ *   return{type:"tool_result",tool_use_id:Z.id,content:J}
+ *
+ * We wrap the content (J) with transform before it's returned
  */
 export const writeToolOutputTransform = (oldFile: string): string | null => {
-  // Find where tool results are returned/processed
-  // Pattern: return { type: "tool_result", content: X }
-  const toolResultPattern = /return\s*\{\s*type:\s*["']tool_result["'],\s*content:\s*([$\w]+)/;
+  // Verified pattern: return{type:"tool_result",tool_use_id:Z.id,content:J}
+  const toolResultPattern = /return\{type:"tool_result",tool_use_id:([$\w]+)\.id,content:([$\w]+)\}/;
   const match = oldFile.match(toolResultPattern);
 
   if (!match || match.index === undefined) {
-    console.log('patch: transforms: writeToolOutputTransform: could not find tool result pattern');
+    console.log('patch: transforms: writeToolOutputTransform: could not find verified tool result pattern');
     return oldFile;
   }
 
-  const contentVar = match[1];
+  const toolUseVar = match[1]; // Z
+  const contentVar = match[2]; // J
   const originalText = match[0];
 
-  const newText = `return{type:"tool_result",content:TWEAKCC_TRANSFORMS.hasTransforms('tool:output')?TWEAKCC_TRANSFORMS.run('tool:output',${contentVar}):${contentVar}`;
+  // Wrap the content with transform
+  const newText = `return{type:"tool_result",tool_use_id:${toolUseVar}.id,content:TWEAKCC_TRANSFORMS.hasTransforms('tool:output')?TWEAKCC_TRANSFORMS.run('tool:output',${contentVar},{toolName:${toolUseVar}.name}):${contentVar}}`;
 
   const newFile = oldFile.replace(originalText, newText);
 
