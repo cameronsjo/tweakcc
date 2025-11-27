@@ -4,6 +4,15 @@
 // Unlike events (fire-and-forget), transforms are SYNCHRONOUS and return modified data.
 //
 // Please see the note about writing patches in ./index.ts.
+//
+// ⚠️  PATTERN VERIFICATION STATUS:
+// ─────────────────────────────────────────────────────────────────────────────
+// ✓ VERIFIED   = Pattern tested against actual cli.js and works
+// ? UNVERIFIED = Pattern is speculative, needs testing with real cli.js
+// ✗ BROKEN     = Pattern confirmed not working, needs fixing
+//
+// Use `npx tweakcc --analyze` to test patterns against your cli.js
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { showDiff, getRequireFuncName } from './index.js';
 import { TransformsConfig } from '../types.js';
@@ -199,6 +208,12 @@ export const writeTransformRunner = (
 /**
  * Find where user messages are processed before being sent to the API
  * Looking for the query/message construction
+ *
+ * ? UNVERIFIED: These patterns are speculative:
+ *   - /async\s+(?:function\s+)?([$\w]+)\s*\([^)]*\)\s*\{[^{}]*role:\s*["']user["']/
+ *   - /\{role:"user",content:([$\w]+)\}/
+ *
+ * TODO: Run `npx tweakcc --analyze` to verify patterns
  */
 export const findPromptTransformLocation = (
   fileContents: string

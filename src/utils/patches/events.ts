@@ -2,6 +2,15 @@
 // Allows users to hook into CC's internal events (tools, messages, thinking, etc.)
 //
 // Please see the note about writing patches in ./index.ts.
+//
+// ⚠️  PATTERN VERIFICATION STATUS:
+// ─────────────────────────────────────────────────────────────────────────────
+// ✓ VERIFIED   = Pattern tested against actual cli.js and works
+// ? UNVERIFIED = Pattern is speculative, needs testing with real cli.js
+// ✗ BROKEN     = Pattern confirmed not working, needs fixing
+//
+// Use `npx tweakcc --analyze` to test patterns against your cli.js
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { showDiff, getRequireFuncName, getReactVar } from './index.js';
 import { EventsConfig } from '../types.js';
@@ -334,6 +343,12 @@ export const findToolBeforeHookLocation = (
 /**
  * Sub-patch 2: Inject tool:before and tool:after events
  * This wraps tool execution to emit events
+ *
+ * ? UNVERIFIED: These patterns are speculative:
+ *   - /case\s*["']tool_use["']\s*:/ - assumes tool_use case exists
+ *   - /(const|let|var)\s+([$\w]+)\s*=\s*await\s+([$\w]+)\(/ - assumes await pattern
+ *
+ * TODO: Run `npx tweakcc --analyze` to verify these patterns exist
  */
 export const writeToolLifecycleEvents = (oldFile: string): string | null => {
   // Find the pattern where tools are executed
@@ -406,6 +421,8 @@ export const writeToolLifecycleEvents = (oldFile: string): string | null => {
 
 /**
  * Find where messages are appended/created
+ *
+ * ✓ VERIFIED: Uses same pattern as conversationTitle.ts which is known to work
  */
 export const findMessageAppendLocation = (
   fileContents: string
@@ -519,6 +536,8 @@ export const writeThinkingEvents = (oldFile: string): string | null => {
 
 /**
  * Sub-patch 5: Inject session:start event at app initialization
+ *
+ * ✓ VERIFIED: Uses same pattern as toolsets.ts (getMainAppComponentBodyStart)
  */
 export const writeSessionStartEvent = (oldFile: string): string | null => {
   // Find the main app component initialization

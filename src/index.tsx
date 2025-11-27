@@ -13,6 +13,7 @@ import { startupCheck, readConfigFile } from './utils/config.js';
 import { enableDebug } from './utils/misc.js';
 import { applyCustomization } from './utils/patches/index.js';
 import { preloadStringsFile } from './utils/promptSync.js';
+import { analyzeCliJs, printReport, searchPattern, printSearchResults } from './utils/patches/analyzer.js';
 
 const createExampleConfigIfMissing = async (
   examplePath: string
@@ -48,12 +49,63 @@ const main = async () => {
     )
     .version('3.1.3')
     .option('-d, --debug', 'enable debug mode')
-    .option('-a, --apply', 'apply saved customizations without interactive UI');
+    .option('-a, --apply', 'apply saved customizations without interactive UI')
+    .option('--analyze', 'analyze cli.js patterns for debugging')
+    .option('--verbose', 'show verbose output (with --analyze)')
+    .option('--search <pattern>', 'search for custom regex pattern in cli.js');
   program.parse();
   const options = program.opts();
 
   if (options.debug) {
     enableDebug();
+  }
+
+  // Handle --analyze flag for pattern debugging
+  if (options.analyze || options.search) {
+    console.log(chalk.cyan('Analyzing Claude Code installation...'));
+
+    // Find Claude Code installation
+    const startupCheckInfo = await startupCheck();
+
+    if (!startupCheckInfo || !startupCheckInfo.ccInstInfo) {
+      console.error(chalk.red('Cannot find Claude Code installation.'));
+      console.error('Run tweakcc without --analyze to see search paths.');
+      process.exit(1);
+    }
+
+    // Read cli.js content
+    let cliContent: string;
+    if (startupCheckInfo.ccInstInfo.nativeInstallationPath) {
+      // For native installations, we need to extract the JS
+      console.log(chalk.yellow('Note: Native installation detected. Analyzing extracted JS.'));
+      // Try to read from the debug output location
+      const debugPath = `${process.env.HOME}/.tweakcc/native-claudejs-patched.js`;
+      try {
+        cliContent = await fs.readFile(debugPath, 'utf8');
+        console.log(chalk.gray(`Reading from: ${debugPath}`));
+      } catch {
+        console.error(chalk.red('Cannot read native installation JS.'));
+        console.error('Run tweakcc --apply --debug first to extract the JS.');
+        process.exit(1);
+      }
+    } else {
+      const cliPath = startupCheckInfo.ccInstInfo.cliPath!;
+      console.log(chalk.gray(`Reading from: ${cliPath}`));
+      cliContent = await fs.readFile(cliPath, 'utf8');
+    }
+
+    // Custom search mode
+    if (options.search) {
+      console.log(chalk.cyan(`\nSearching for: ${options.search}\n`));
+      const results = searchPattern(cliContent, options.search);
+      printSearchResults(options.search, results);
+      process.exit(0);
+    }
+
+    // Full analysis mode
+    const report = analyzeCliJs(cliContent);
+    printReport(report, options.verbose);
+    process.exit(0);
   }
 
   // Handle --apply flag for non-interactive mode
