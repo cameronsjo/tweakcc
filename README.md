@@ -132,6 +132,152 @@ In particular, you may run into a situation where you have a tweakcc-patched (or
 
 To break out of this loop you can install a different version of Claude Code, which will cause tweakcc to discard its existing backup and take a fresh backup of the new `claude` file.  Or you can simply delete tweakcc's backup file (located at `~/.tweakcc/cli.backup.js` or `~/.tweakcc/native-binary.backup`).  If you do delete `cli.backup.js` or `native-binary.backup`, make sure you reinstall Claude Code _before_ you run tweakcc again, because if your `claude` is still the modified version, it will get into the same loop again.
 
+## Events & Transforms (Beta)
+
+> [!note]
+> This is an experimental feature. Pattern matching is verified against Claude Code 2.0.55.
+
+tweakcc can inject custom event hooks and data transforms into Claude Code, allowing you to:
+
+- **Events**: React to Claude Code actions (tool execution, messages, thinking, etc.)
+- **Transforms**: Modify data before it's sent/received (prompts, responses, tool I/O)
+
+### CLI Commands
+
+Manage hooks from the command line:
+
+```bash
+# List all configured hooks
+npx tweakcc hooks list
+
+# Add a quick hook
+npx tweakcc hooks add "tool:after" "echo 'Tool executed!' >> ~/cc-log.txt"
+npx tweakcc hooks add "tool:before" "./my-hook.sh" --filter-tool Bash
+
+# Test hooks for an event
+npx tweakcc hooks test "tool:after"
+
+# Enable/disable hooks
+npx tweakcc hooks enable <hook-id>
+npx tweakcc hooks disable <hook-id>
+
+# Remove a hook
+npx tweakcc hooks remove <hook-id>
+```
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `tool:before` | Before a tool executes |
+| `tool:after` | After a tool completes |
+| `message:user` | User message received |
+| `message:assistant:start` | Assistant starts responding |
+| `thinking:start` | Thinking block starts |
+| `thinking:update` | Thinking content streams |
+| `stream:start` | Response stream starts |
+| `stream:chunk` | Text chunk received |
+| `stream:end` | Response stream ends |
+| `session:start` | Claude Code session starts |
+| `custom:*` | Custom user events (via `/emit`) |
+
+### Configuration Example
+
+Add to your `~/.tweakcc/config.json`:
+
+```json
+{
+  "settings": {
+    "events": {
+      "enabled": true,
+      "hooks": [
+        {
+          "id": "log-tools",
+          "name": "Log tool usage",
+          "events": ["tool:before", "tool:after"],
+          "type": "command",
+          "command": "echo \"$TWEAKCC_EVENT: $TWEAKCC_TOOL_NAME\" >> ~/cc-tools.log",
+          "enabled": true,
+          "filter": {
+            "tools": ["Bash", "Edit", "Write"]
+          }
+        },
+        {
+          "id": "webhook-notify",
+          "name": "Notify on completion",
+          "events": "stream:end",
+          "type": "webhook",
+          "webhook": "http://localhost:8080/notify",
+          "enabled": true,
+          "onError": "retry",
+          "retryCount": 3
+        }
+      ],
+      "logging": {
+        "enabled": true,
+        "logFile": "~/.tweakcc/events.log",
+        "logLevel": "info"
+      }
+    }
+  }
+}
+```
+
+### Hook Configuration Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `id` | string | Unique identifier |
+| `name` | string | Human-readable name |
+| `events` | string\|string[] | Events to listen for |
+| `type` | `command`\|`webhook`\|`script` | Handler type |
+| `command` | string | Shell command (for `type: command`) |
+| `webhook` | string | URL to POST to (for `type: webhook`) |
+| `script` | string | Path to Node.js script (for `type: script`) |
+| `enabled` | boolean | Whether hook is active |
+| `async` | boolean | Non-blocking execution (default: true) |
+| `timeout` | number | Timeout in ms (default: 5000) |
+| `onError` | `continue`\|`abort`\|`retry` | Error handling strategy |
+| `retryCount` | number | Retries if `onError: retry` (default: 3) |
+| `filter.tools` | string[] | Only trigger for specific tools |
+| `filter.toolsExclude` | string[] | Exclude specific tools |
+| `filter.regex` | string | Only trigger if data matches regex |
+| `env` | object | Additional environment variables |
+| `cwd` | string | Working directory |
+
+### Environment Variables
+
+Hooks receive these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `TWEAKCC_EVENT` | Event name |
+| `TWEAKCC_DATA` | JSON event data |
+| `TWEAKCC_HOOK_ID` | Hook ID |
+| `TWEAKCC_HOOK_NAME` | Hook name |
+| `TWEAKCC_TOOL_NAME` | Tool name (for tool events) |
+| `TWEAKCC_TOOL_ID` | Tool use ID (for tool events) |
+
+### Testing Events
+
+Use the `/emit` slash command inside Claude Code to test your hooks:
+
+```
+/emit custom:test {"message": "Hello from custom event!"}
+```
+
+### Analyzing Patterns
+
+Verify that event patterns exist in your Claude Code installation:
+
+```bash
+# Full analysis
+NPM_PREFIX=/path/to/npm npx tweakcc --analyze
+
+# Search for specific patterns
+npx tweakcc --analyze --search "tool_use"
+```
+
 ## FAQ
 
 #### System prompts

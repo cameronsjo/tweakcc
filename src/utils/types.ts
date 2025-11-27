@@ -160,6 +160,11 @@ export type TweakccEventType =
 export type EventHandlerType = 'script' | 'command' | 'webhook';
 
 /**
+ * Error handling strategy for hooks
+ */
+export type HookErrorStrategy = 'continue' | 'abort' | 'retry';
+
+/**
  * Configuration for a single event hook
  */
 export interface EventHookConfig {
@@ -171,13 +176,25 @@ export interface EventHookConfig {
   command?: string; // Shell command to execute (for type: 'command')
   webhook?: string; // URL to POST to (for type: 'webhook')
   async?: boolean; // Whether to run async (non-blocking), default: true
-  timeout?: number; // Timeout in ms for commands/webhooks
+  timeout?: number; // Timeout in ms for commands/webhooks (default: 5000)
   enabled: boolean;
+
+  // Error handling
+  onError?: HookErrorStrategy; // What to do on error (default: 'continue')
+  retryCount?: number; // Number of retries if onError is 'retry' (default: 3)
+  retryDelay?: number; // Delay between retries in ms (default: 1000)
+
+  // Conditional execution
   filter?: {
-    // Optional filtering
-    tools?: string[]; // Only trigger for specific tools
+    tools?: string[]; // Only trigger for specific tools (for tool:* events)
+    toolsExclude?: string[]; // Exclude specific tools
     messageTypes?: string[]; // Only trigger for specific message types
+    regex?: string; // Only trigger if event data matches regex
   };
+
+  // Execution environment
+  env?: Record<string, string>; // Additional environment variables
+  cwd?: string; // Working directory for commands
 }
 
 /**

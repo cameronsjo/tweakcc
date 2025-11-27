@@ -89,9 +89,14 @@ const TWEAKCC_EVENTS = (function() {
   function matchesFilter(hook, eventData) {
     if (!hook.filter) return true;
 
-    // Tool filter
+    // Tool include filter
     if (hook.filter.tools && eventData.toolName) {
       if (!hook.filter.tools.includes(eventData.toolName)) return false;
+    }
+
+    // Tool exclude filter
+    if (hook.filter.toolsExclude && eventData.toolName) {
+      if (hook.filter.toolsExclude.includes(eventData.toolName)) return false;
     }
 
     // Message type filter
@@ -99,13 +104,45 @@ const TWEAKCC_EVENTS = (function() {
       if (!hook.filter.messageTypes.includes(eventData.messageType)) return false;
     }
 
+    // Regex filter on stringified data
+    if (hook.filter.regex) {
+      try {
+        const regex = new RegExp(hook.filter.regex);
+        if (!regex.test(JSON.stringify(eventData))) return false;
+      } catch (e) {
+        log('warn', 'Invalid regex filter', { hookId: hook.id, regex: hook.filter.regex });
+      }
+    }
+
     return true;
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function executeWithRetry(hook, fn, attempt = 0) {
+    const maxRetries = hook.retryCount ?? 3;
+    const retryDelay = hook.retryDelay ?? 1000;
+
+    try {
+      return await fn();
+    } catch (e) {
+      if (hook.onError === 'retry' && attempt < maxRetries) {
+        log('warn', 'Hook failed, retrying...', { hookId: hook.id, attempt: attempt + 1, maxRetries });
+        await sleep(retryDelay * Math.pow(2, attempt)); // Exponential backoff
+        return executeWithRetry(hook, fn, attempt + 1);
+      }
+      throw e;
+    }
   }
 
   function executeHook(hook, event, data) {
     const eventData = {
       event,
       timestamp: new Date().toISOString(),
+      hookId: hook.id,
+      hookName: hook.name || hook.id,
       ...data
     };
 
@@ -114,55 +151,111 @@ const TWEAKCC_EVENTS = (function() {
       return;
     }
 
+    const startTime = Date.now();
     log('debug', 'Executing hook', { hookId: hook.id, event, type: hook.type });
 
-    try {
-      if (hook.type === 'command' && hook.command) {
-        const env = {
-          ...process.env,
-          TWEAKCC_EVENT: event,
-          TWEAKCC_DATA: JSON.stringify(eventData)
-        };
+    const handleError = (e) => {
+      const duration = Date.now() - startTime;
+      log('error', 'Hook execution error', { hookId: hook.id, event, error: e.message, duration });
 
+      if (hook.onError === 'abort') {
+        throw new Error('Hook execution aborted: ' + e.message);
+      }
+      // 'continue' is default - just log and continue
+    };
+
+    try {
+      // Build environment variables
+      const baseEnv = {
+        ...process.env,
+        ...(hook.env || {}),
+        TWEAKCC_EVENT: event,
+        TWEAKCC_DATA: JSON.stringify(eventData),
+        TWEAKCC_HOOK_ID: hook.id,
+        TWEAKCC_HOOK_NAME: hook.name || hook.id
+      };
+
+      // Add tool-specific env vars
+      if (eventData.toolName) baseEnv.TWEAKCC_TOOL_NAME = eventData.toolName;
+      if (eventData.toolId) baseEnv.TWEAKCC_TOOL_ID = eventData.toolId;
+
+      const execOptions = {
+        env: baseEnv,
+        cwd: hook.cwd || process.cwd(),
+        timeout: hook.timeout || 5000
+      };
+
+      if (hook.type === 'command' && hook.command) {
         if (hook.async !== false) {
           // Non-blocking execution
           const child = spawn('sh', ['-c', hook.command], {
-            env,
+            ...execOptions,
             detached: true,
             stdio: 'ignore'
           });
           child.unref();
         } else {
-          // Blocking execution
-          execSync(hook.command, {
-            env,
-            timeout: hook.timeout || 5000,
-            stdio: 'ignore'
-          });
+          // Blocking execution with retry support
+          const runCmd = () => {
+            return new Promise((resolve, reject) => {
+              try {
+                execSync(hook.command, { ...execOptions, stdio: 'ignore' });
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            });
+          };
+
+          if (hook.onError === 'retry') {
+            executeWithRetry(hook, runCmd).catch(handleError);
+          } else {
+            runCmd().catch(handleError);
+          }
         }
       } else if (hook.type === 'webhook' && hook.webhook) {
-        // Fire-and-forget webhook
+        // Fire-and-forget webhook with retry support
         const https = ${requireFunc}('https');
         const http = ${requireFunc}('http');
-        const url = new URL(hook.webhook);
-        const client = url.protocol === 'https:' ? https : http;
 
-        const postData = JSON.stringify(eventData);
-        const req = client.request(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(postData)
-          },
-          timeout: hook.timeout || 5000
-        });
+        const sendWebhook = () => {
+          return new Promise((resolve, reject) => {
+            const url = new URL(hook.webhook);
+            const client = url.protocol === 'https:' ? https : http;
 
-        req.on('error', (e) => {
-          log('error', 'Webhook failed', { hookId: hook.id, error: e.message });
-        });
+            const postData = JSON.stringify(eventData);
+            const req = client.request(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                'X-Tweakcc-Event': event,
+                'X-Tweakcc-Hook-Id': hook.id
+              },
+              timeout: hook.timeout || 5000
+            });
 
-        req.write(postData);
-        req.end();
+            req.on('response', (res) => {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                resolve();
+              } else {
+                reject(new Error('HTTP ' + res.statusCode));
+              }
+            });
+
+            req.on('error', reject);
+            req.on('timeout', () => reject(new Error('Timeout')));
+
+            req.write(postData);
+            req.end();
+          });
+        };
+
+        if (hook.onError === 'retry') {
+          executeWithRetry(hook, sendWebhook).catch(handleError);
+        } else {
+          sendWebhook().catch(handleError);
+        }
       } else if (hook.type === 'script' && hook.script) {
         // Dynamic script execution
         try {
@@ -172,11 +265,8 @@ const TWEAKCC_EVENTS = (function() {
 
           // Use child process to run the script
           const child = spawn('node', [scriptPath], {
-            env: {
-              ...process.env,
-              TWEAKCC_EVENT: event,
-              TWEAKCC_DATA: JSON.stringify(eventData)
-            },
+            env: baseEnv,
+            cwd: hook.cwd || dirname(scriptPath),
             detached: hook.async !== false,
             stdio: 'ignore'
           });
@@ -185,13 +275,14 @@ const TWEAKCC_EVENTS = (function() {
             child.unref();
           }
         } catch (e) {
-          log('error', 'Script execution failed', { hookId: hook.id, error: e.message });
+          handleError(e);
         }
       }
 
-      log('info', 'Hook executed', { hookId: hook.id, event });
+      const duration = Date.now() - startTime;
+      log('info', 'Hook executed', { hookId: hook.id, event, duration });
     } catch (e) {
-      log('error', 'Hook execution error', { hookId: hook.id, event, error: e.message });
+      handleError(e);
     }
   }
 
@@ -474,30 +565,113 @@ export const findThinkingLocation = (
 
 /**
  * Sub-patch 4: Inject thinking events
+ *
+ * ✓ VERIFIED: Pattern found in cli.js 2.0.55:
+ *   case"thinking_delta":{if(G.type==="thinking")this._emit("thinking",Q.delta.thinking,G.thinking)
+ *
+ * We inject thinking:start at content_block_start for thinking type
+ * and thinking:update at thinking_delta
  */
 export const writeThinkingEvents = (oldFile: string): string | null => {
-  // Find the thinking verb display component
-  // This is where the "Thinking..." status is rendered
-  const thinkingVerbPattern = /\{words:\s*\[/;
-  const match = oldFile.match(thinkingVerbPattern);
+  // Pattern: case"thinking_delta":{if(G.type==="thinking")this._emit("thinking"
+  // This is where thinking content is streamed
+  const thinkingDeltaPattern = /case"thinking_delta":\{if\(([$\w]+)\.type==="thinking"\)this\._emit\("thinking"/;
+  const match = oldFile.match(thinkingDeltaPattern);
 
   if (!match || match.index === undefined) {
-    console.error('patch: events: writeThinkingEvents: could not find thinking verbs pattern');
-    return null;
-  }
-
-  // Look backwards for the function/component containing this
-  const lookback = oldFile.slice(Math.max(0, match.index - 300), match.index);
-  const funcPattern = /function\s+([$\w]+)\s*\([^)]*\)\s*\{[^{}]*$/;
-  const funcMatch = lookback.match(funcPattern);
-
-  if (!funcMatch) {
-    // Can't find the enclosing function, skip this patch
+    console.log('patch: events: writeThinkingEvents: could not find thinking_delta pattern (optional)');
     return oldFile;
   }
 
-  // For now, return unchanged - thinking events are complex to inject
-  // Would need to track state changes in the thinking indicator component
+  const blockVar = match[1]; // G
+  const originalCode = match[0];
+
+  // Inject thinking:update event before the _emit call
+  const newCode = `case"thinking_delta":{TWEAKCC_EVENTS.emit('thinking:update',{thinking:Q.delta.thinking});if(${blockVar}.type==="thinking")this._emit("thinking"`;
+
+  const newFile = oldFile.replace(originalCode, newCode);
+
+  if (newFile === oldFile) {
+    return oldFile;
+  }
+
+  // Also inject thinking:start at content_block_start for thinking type
+  // Pattern: case"content_block_start":switch(QA.content_block.type){...case"thinking":
+  const thinkingStartPattern = /case"thinking":([$\w]+)\[[$\w]+\.index\]=\{\.\.\.[$\w]+\.content_block,thinking:""\}/;
+  const startMatch = newFile.match(thinkingStartPattern);
+
+  if (startMatch && startMatch.index !== undefined) {
+    const startOriginal = startMatch[0];
+    const startNew = `case"thinking":TWEAKCC_EVENTS.emit('thinking:start',{index:QA.index});${startMatch[1]}[QA.index]={...QA.content_block,thinking:""}`;
+    const finalFile = newFile.replace(startOriginal, startNew);
+
+    showDiff(oldFile, finalFile, '[thinking events]', match.index, match.index + originalCode.length);
+    return finalFile;
+  }
+
+  showDiff(oldFile, newFile, newCode, match.index, match.index + originalCode.length);
+  return newFile;
+};
+
+// ============================================================================
+// STREAM EVENTS
+// ============================================================================
+
+/**
+ * Sub-patch 4b: Inject stream events
+ *
+ * ✓ VERIFIED: Patterns found in cli.js 2.0.55:
+ *   case"content_block_delta" - stream chunk events
+ *   case"text_delta" - text content streaming
+ *   case"message_start" - stream starts
+ *   case"message_stop" - stream ends
+ */
+export const writeStreamEvents = (oldFile: string): string | null => {
+  let newFile = oldFile;
+
+  // 1. stream:start at message_start
+  // Pattern: case"message_start":{q=QA.message,N=Date.now()-H
+  const messageStartPattern = /case"message_start":\{([$\w]+)=([$\w]+)\.message,([$\w]+)=Date\.now\(\)/;
+  const startMatch = newFile.match(messageStartPattern);
+
+  if (startMatch && startMatch.index !== undefined) {
+    const msgVar = startMatch[1];
+    const eventVar = startMatch[2];
+    const timeVar = startMatch[3];
+    const original = startMatch[0];
+    const replacement = `case"message_start":{TWEAKCC_EVENTS.emit('stream:start',{messageId:${eventVar}.message?.id});${msgVar}=${eventVar}.message,${timeVar}=Date.now()`;
+    newFile = newFile.replace(original, replacement);
+  }
+
+  // 2. stream:chunk at text_delta
+  // Pattern: case"text_delta":{if(G.type==="text")
+  const textDeltaPattern = /case"text_delta":\{if\(([$\w]+)\.type==="text"\)/;
+  const chunkMatch = newFile.match(textDeltaPattern);
+
+  if (chunkMatch && chunkMatch.index !== undefined) {
+    const blockVar = chunkMatch[1];
+    const original = chunkMatch[0];
+    const replacement = `case"text_delta":{TWEAKCC_EVENTS.emit('stream:chunk',{text:Q.delta.text,index:Q.index});if(${blockVar}.type==="text")`;
+    newFile = newFile.replace(original, replacement);
+  }
+
+  // 3. stream:end at message_stop
+  // Pattern: case"message_stop":
+  const messageStopPattern = /case"message_stop":\{this\._addMessageParam/;
+  const stopMatch = newFile.match(messageStopPattern);
+
+  if (stopMatch && stopMatch.index !== undefined) {
+    const original = stopMatch[0];
+    const replacement = `case"message_stop":{TWEAKCC_EVENTS.emit('stream:end',{});this._addMessageParam`;
+    newFile = newFile.replace(original, replacement);
+  }
+
+  if (newFile !== oldFile) {
+    showDiff(oldFile, newFile, '[stream events]', 0, 100);
+    return newFile;
+  }
+
+  console.log('patch: events: writeStreamEvents: no stream patterns matched (optional)');
   return oldFile;
 };
 
@@ -592,17 +766,28 @@ export const findMcpConnectLocation = (
 
 /**
  * Sub-patch 6: Inject MCP events (optional - may not find location)
+ *
+ * ? UNVERIFIED: MCP patterns are complex due to multiple client implementations
+ * Patterns to look for:
+ *   - MCPClient constructor
+ *   - .connect() calls on MCP clients
+ *   - MCP tool invocations
  */
 export const writeMcpEvents = (oldFile: string): string | null => {
-  const location = findMcpConnectLocation(oldFile);
+  let newFile = oldFile;
 
-  if (!location) {
-    // MCP events are optional - don't fail if not found
-    return oldFile;
+  // MCP server connection pattern
+  // Look for: mcpClients.map or similar patterns that iterate MCP clients
+  const mcpIterPattern = /([$\w]+)\.map\(\(?([$\w]+)\)?\s*=>\s*\{[^}]*connect/;
+  const iterMatch = newFile.match(mcpIterPattern);
+
+  if (iterMatch && iterMatch.index !== undefined) {
+    // We could inject mcp:connect here, but it's complex
+    console.log('patch: events: found MCP iteration pattern (future: inject mcp:connect)');
   }
 
-  // For now, MCP events require more complex injection
-  // Return unchanged
+  // For now, MCP events are not fully implemented
+  // The event types exist and can be emitted manually via /emit
   return oldFile;
 };
 
@@ -745,18 +930,32 @@ export const writeEvents = (
     console.log('patch: events: step 4 skipped (writeSessionStartEvent) - location not found');
   }
 
-  // Step 5: Inject MCP events (optional)
+  // Step 5: Inject thinking events (optional)
+  const thinkingResult = writeThinkingEvents(result);
+  if (thinkingResult && thinkingResult !== result) {
+    result = thinkingResult;
+    console.log('patch: events: step 5 applied (writeThinkingEvents)');
+  }
+
+  // Step 6: Inject stream events (optional)
+  const streamResult = writeStreamEvents(result);
+  if (streamResult && streamResult !== result) {
+    result = streamResult;
+    console.log('patch: events: step 6 applied (writeStreamEvents)');
+  }
+
+  // Step 7: Inject MCP events (optional)
   const mcpResult = writeMcpEvents(result);
   if (mcpResult) {
     result = mcpResult;
   }
 
-  // Step 6: Add /emit slash command for testing
+  // Step 8: Add /emit slash command for testing
   const emitResult = writeEmitSlashCommand(result);
   if (emitResult) {
     result = emitResult;
   } else {
-    console.log('patch: events: step 6 skipped (writeEmitSlashCommand) - location not found');
+    console.log('patch: events: step 8 skipped (writeEmitSlashCommand) - location not found');
   }
 
   return result;

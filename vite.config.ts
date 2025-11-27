@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => ({
       },
       output: {
         entryFileNames: 'index.js',
+        banner: '#!/usr/bin/env node',
       },
     },
   },
