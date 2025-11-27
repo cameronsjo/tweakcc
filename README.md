@@ -278,6 +278,64 @@ NPM_PREFIX=/path/to/npm npx tweakcc --analyze
 npx tweakcc --analyze --search "tool_use"
 ```
 
+### Using with Claude Agent SDK
+
+tweakcc patches work seamlessly with the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python). The SDK spawns Claude Code as a subprocess, which runs the patched cli.js:
+
+```
+┌─────────────────────────────────────┐
+│     Claude Agent SDK (Python/TS)    │  ← Your application
+├─────────────────────────────────────┤
+│          Claude Code CLI            │  ← Runtime
+├─────────────────────────────────────┤
+│       tweakcc patches (cli.js)      │  ← Events fire here
+└─────────────────────────────────────┘
+```
+
+**Example: Agent telemetry pipeline**
+
+```python
+# agent.py - Your SDK code runs normally
+from claude_code_sdk import Claude
+
+async def main():
+    async with Claude() as client:
+        result = await client.query("Fix the bug in main.py")
+```
+
+```json
+// ~/.tweakcc/config.json - Hooks capture everything
+{
+  "settings": {
+    "events": {
+      "enabled": true,
+      "hooks": [
+        {
+          "id": "agent-telemetry",
+          "events": ["tool:before", "tool:after"],
+          "type": "webhook",
+          "webhook": "http://localhost:9000/telemetry",
+          "enabled": true
+        }
+      ]
+    }
+  }
+}
+```
+
+**SDK-friendly use cases:**
+
+| Use Case | Event | Description |
+|----------|-------|-------------|
+| Agent telemetry | `tool:after` | Log all tool calls to a database |
+| Cost tracking | `stream:end` | Track token usage per agent run |
+| Audit logging | `tool:before` | Record inputs before execution |
+| Real-time dashboard | `stream:chunk` | Pipe responses to a websocket |
+| Safety monitoring | `tool:before` | Alert on specific Bash commands |
+| Custom analytics | `session:start` | Track agent session lifecycle |
+
+The SDK doesn't need any modifications—hooks are injected at the Claude Code layer and fire automatically.
+
 ## FAQ
 
 #### System prompts
