@@ -52,6 +52,7 @@ import { applySystemPrompts } from './systemPrompts.js';
 import { writeFixLspSupport } from './fixLspSupport.js';
 import { writeToolsets } from './toolsets.js';
 import { writeConversationTitle } from './conversationTitle.js';
+import { writeEvents } from './events.js';
 
 export interface LocationResult {
   startIndex: number;
@@ -614,6 +615,12 @@ export const applyCustomization = async (
 
   // Apply conversation title management (always enabled)
   if ((result = writeConversationTitle(content))) content = result;
+
+  // Apply custom events hook system (enabled if events configured)
+  if (config.settings.events?.enabled && config.settings.events.hooks?.length > 0) {
+    if ((result = writeEvents(content, config.settings.events)))
+      content = result;
+  }
 
   // Write the modified content back
   if (ccInstInfo.nativeInstallationPath) {

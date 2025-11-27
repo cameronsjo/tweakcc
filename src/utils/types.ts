@@ -109,6 +109,90 @@ export interface Toolset {
   allowedTools: string[] | '*';
 }
 
+// ============================================================================
+// CUSTOM EVENTS HOOK SYSTEM
+// ============================================================================
+
+/**
+ * Event types that can be hooked into
+ */
+export type TweakccEventType =
+  // Tool lifecycle events
+  | 'tool:before' // Before a tool is executed
+  | 'tool:after' // After a tool completes (success or failure)
+  | 'tool:error' // When a tool encounters an error
+  | 'tool:permission' // When tool permission is requested
+
+  // Message lifecycle events
+  | 'message:user' // User message submitted
+  | 'message:assistant:start' // Assistant starts responding
+  | 'message:assistant:end' // Assistant finishes responding
+  | 'message:system' // System message added
+
+  // Thinking/streaming events
+  | 'thinking:start' // Thinking block begins
+  | 'thinking:update' // Thinking content updates
+  | 'thinking:end' // Thinking block ends
+  | 'stream:start' // Response streaming starts
+  | 'stream:chunk' // Stream chunk received
+  | 'stream:end' // Response streaming ends
+
+  // Conversation lifecycle events
+  | 'conversation:start' // New conversation started
+  | 'conversation:resume' // Existing conversation resumed
+  | 'conversation:end' // Conversation ended
+
+  // MCP events
+  | 'mcp:connect' // MCP server connected
+  | 'mcp:disconnect' // MCP server disconnected
+  | 'mcp:tool:call' // MCP tool invoked
+
+  // Session events
+  | 'session:start' // Claude Code session starts
+  | 'session:end' // Claude Code session ends
+
+  // Custom user-defined events
+  | `custom:${string}`;
+
+/**
+ * Handler type for events
+ */
+export type EventHandlerType = 'script' | 'command' | 'webhook';
+
+/**
+ * Configuration for a single event hook
+ */
+export interface EventHookConfig {
+  id: string;
+  name?: string; // Human-readable name
+  events: TweakccEventType | TweakccEventType[]; // Events to listen for
+  type: EventHandlerType;
+  script?: string; // Path to JS/TS script (for type: 'script')
+  command?: string; // Shell command to execute (for type: 'command')
+  webhook?: string; // URL to POST to (for type: 'webhook')
+  async?: boolean; // Whether to run async (non-blocking), default: true
+  timeout?: number; // Timeout in ms for commands/webhooks
+  enabled: boolean;
+  filter?: {
+    // Optional filtering
+    tools?: string[]; // Only trigger for specific tools
+    messageTypes?: string[]; // Only trigger for specific message types
+  };
+}
+
+/**
+ * Global events configuration
+ */
+export interface EventsConfig {
+  enabled: boolean; // Master switch for the event system
+  hooks: EventHookConfig[];
+  logging?: {
+    enabled: boolean;
+    logFile?: string; // Path to log file
+    logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  };
+}
+
 export interface Settings {
   themes: Theme[];
   thinkingVerbs: ThinkingVerbsConfig;
@@ -118,6 +202,7 @@ export interface Settings {
   misc: MiscConfig;
   toolsets: Toolset[];
   defaultToolset: string | null;
+  events?: EventsConfig; // Custom events hook system
 }
 
 export interface TweakccConfig {
@@ -910,6 +995,14 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   toolsets: [],
   defaultToolset: null,
+  events: {
+    enabled: false,
+    hooks: [],
+    logging: {
+      enabled: false,
+      logLevel: 'info',
+    },
+  },
 };
 
 // Support XDG Base Directory Specification with backward compatibility
