@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [v3.2.0](https://github.com/Piebald-AI/tweakcc/releases/tag/v3.2.0) - 2025-11-27
+
+### Added
+
+- **Events System (Beta)**: Hook into Claude Code's internal events
+  - Event types: `tool:before`, `tool:after`, `stream:start`, `stream:chunk`, `stream:end`, `thinking:start`, `thinking:update`, `session:start`, and more
+  - Handler types: `command` (shell), `webhook` (HTTP POST), `script` (Node.js)
+  - Error handling with retry logic and exponential backoff (`onError: 'retry'`)
+  - Conditional filters: `filter.tools`, `filter.toolsExclude`, `filter.regex`
+  - Built-in logging to `~/.tweakcc/events.log`
+  - `/emit` slash command for testing custom events
+
+- **Transforms System (Beta)**: Modify data before it's sent/received
+  - Transform types: `prompt:before`, `response:before`, `tool:input`, `tool:output`
+  - Synchronous middleware with priority ordering
+
+- **CLI Hooks Management**:
+  - `tweakcc hooks list` - List all configured hooks
+  - `tweakcc hooks add <event> <command>` - Quick-add a hook
+  - `tweakcc hooks remove <id>` - Remove a hook
+  - `tweakcc hooks test <event>` - Test hooks locally
+  - `tweakcc hooks enable/disable <id>` - Toggle hooks
+
+- **Pattern Analyzer** for debugging:
+  - `tweakcc --analyze` - Test patterns against cli.js
+  - `tweakcc --analyze --search <pattern>` - Custom regex search
+  - Verification markers in source (VERIFIED/UNVERIFIED/BROKEN)
+
+- **Example Hook Scripts** in `examples/hooks/`:
+  - `log-tools.sh` - Log tool usage to file
+  - `notify-complete.sh` - Desktop notification on completion
+  - `audit-bash.sh` - Security audit for Bash commands
+  - `telemetry-server.js` - Webhook receiver for events
+
+- **Claude Agent SDK Integration**: Events work transparently with SDK-spawned agents
+
+### Technical
+
+- Verified patterns against Claude Code 2.0.55
+- Enhanced environment variables: `TWEAKCC_TOOL_NAME`, `TWEAKCC_TOOL_ID`, etc.
+
 ## [v3.1.3](https://github.com/Piebald-AI/tweakcc/releases/tag/v3.1.3) - 2025-11-26
 
 - Add paths for mise npm backend (#234) - @coryzibell

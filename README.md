@@ -336,6 +336,83 @@ async def main():
 
 The SDK doesn't need any modifications—hooks are injected at the Claude Code layer and fire automatically.
 
+### Transforms (Data Modification)
+
+Unlike events (fire-and-forget), **transforms** can intercept and modify data synchronously.
+
+> [!warning]
+> Transforms are more experimental than events. Some patterns may not match your Claude Code version.
+
+#### Transform Types
+
+| Transform | Description |
+|-----------|-------------|
+| `prompt:before` | Modify user prompt before sending to API |
+| `prompt:system` | Modify system prompt |
+| `response:before` | Modify response before displaying |
+| `tool:input` | Modify tool input before execution |
+| `tool:output` | Modify tool output before returning |
+
+#### How Transforms Work
+
+Transforms run synchronously via external scripts:
+1. Input is written to a temp file (`TWEAKCC_INPUT_FILE`)
+2. Your script reads, modifies, and writes to output file (`TWEAKCC_OUTPUT_FILE`)
+3. Modified data is used by Claude Code
+
+#### Transform Configuration
+
+```json
+{
+  "settings": {
+    "transforms": {
+      "enabled": true,
+      "transforms": [
+        {
+          "id": "redact-secrets",
+          "name": "Redact API keys from tool output",
+          "transform": "tool:output",
+          "script": "~/.tweakcc/transforms/redact-secrets.js",
+          "enabled": true,
+          "priority": 10,
+          "timeout": 5000,
+          "filter": {
+            "tools": ["Bash", "Read"]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Example Transform Script
+
+```javascript
+#!/usr/bin/env node
+// ~/.tweakcc/transforms/redact-secrets.js
+const fs = require('fs');
+
+const input = fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8');
+
+// Redact API keys
+const redacted = input.replace(/sk-[a-zA-Z0-9]{20,}/g, 'sk-[REDACTED]');
+
+fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, redacted);
+```
+
+#### Transform Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `id` | string | Unique identifier |
+| `transform` | string | Transform type |
+| `script` | string | Path to transform script |
+| `enabled` | boolean | Whether active |
+| `priority` | number | Execution order (lower = first, default: 100) |
+| `timeout` | number | Max execution time in ms (default: 5000) |
+| `filter.tools` | string[] | Only apply to specific tools |
+
 ## FAQ
 
 #### System prompts
