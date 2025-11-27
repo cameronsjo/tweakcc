@@ -53,6 +53,7 @@ import { writeFixLspSupport } from './fixLspSupport.js';
 import { writeToolsets } from './toolsets.js';
 import { writeConversationTitle } from './conversationTitle.js';
 import { writeEvents } from './events.js';
+import { writeTransforms } from './transforms.js';
 
 export interface LocationResult {
   startIndex: number;
@@ -619,6 +620,12 @@ export const applyCustomization = async (
   // Apply custom events hook system (enabled if events configured)
   if (config.settings.events?.enabled && config.settings.events.hooks?.length > 0) {
     if ((result = writeEvents(content, config.settings.events)))
+      content = result;
+  }
+
+  // Apply transform/middleware plugin system (enabled if transforms configured)
+  if (config.settings.transforms?.enabled && config.settings.transforms.transforms?.length > 0) {
+    if ((result = writeTransforms(content, config.settings.transforms)))
       content = result;
   }
 

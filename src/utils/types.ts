@@ -193,6 +193,46 @@ export interface EventsConfig {
   };
 }
 
+// ============================================================================
+// TRANSFORM/MIDDLEWARE PLUGIN SYSTEM
+// ============================================================================
+
+/**
+ * Transform types that can intercept and modify data
+ */
+export type TransformType =
+  | 'prompt:before' // Modify user prompt before sending to API
+  | 'prompt:system' // Modify system prompt
+  | 'response:before' // Modify response before displaying
+  | 'response:stream' // Modify each stream chunk
+  | 'tool:input' // Modify tool input before execution
+  | 'tool:output'; // Modify tool output before returning
+
+/**
+ * Configuration for a transform plugin
+ * Unlike event hooks, transforms are SYNCHRONOUS and can modify data
+ */
+export interface TransformConfig {
+  id: string;
+  name?: string;
+  transform: TransformType;
+  script: string; // Path to JS file that exports a transform function
+  enabled: boolean;
+  priority?: number; // Lower = runs first (default: 100)
+  timeout?: number; // Max execution time in ms (default: 5000)
+  filter?: {
+    tools?: string[]; // Only for tool:input/output
+  };
+}
+
+/**
+ * Global transforms configuration
+ */
+export interface TransformsConfig {
+  enabled: boolean;
+  transforms: TransformConfig[];
+}
+
 export interface Settings {
   themes: Theme[];
   thinkingVerbs: ThinkingVerbsConfig;
@@ -203,6 +243,7 @@ export interface Settings {
   toolsets: Toolset[];
   defaultToolset: string | null;
   events?: EventsConfig; // Custom events hook system
+  transforms?: TransformsConfig; // Transform/middleware plugin system
 }
 
 export interface TweakccConfig {
@@ -1002,6 +1043,10 @@ export const DEFAULT_SETTINGS: Settings = {
       enabled: false,
       logLevel: 'info',
     },
+  },
+  transforms: {
+    enabled: false,
+    transforms: [],
   },
 };
 
