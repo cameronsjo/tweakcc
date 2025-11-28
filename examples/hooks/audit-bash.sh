@@ -19,8 +19,14 @@ AUDIT_FILE="${TWEAKCC_AUDIT_FILE:-$HOME/.tweakcc/bash-audit.log}"
 mkdir -p "$(dirname "$AUDIT_FILE")"
 
 # Parse the JSON data to extract command
-# Using basic parsing - for production use jq
-COMMAND=$(echo "$TWEAKCC_DATA" | grep -o '"command":"[^"]*"' | cut -d'"' -f4)
+# SECURITY: Use base64-encoded data to avoid shell injection issues
+if command -v jq &> /dev/null; then
+    # Preferred: use jq for safe JSON parsing
+    COMMAND=$(echo "$TWEAKCC_DATA_BASE64" | base64 -d | jq -r '.input.command // empty')
+else
+    # Fallback: basic parsing (less safe, but works without jq)
+    COMMAND=$(echo "$TWEAKCC_DATA_BASE64" | base64 -d | grep -o '"command":"[^"]*"' | cut -d'"' -f4)
+fi
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 USER=$(whoami)

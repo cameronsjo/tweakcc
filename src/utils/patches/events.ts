@@ -86,6 +86,45 @@ const TWEAKCC_EVENTS = (function() {
     }
   }
 
+  // Cache compiled regex patterns to avoid recompilation overhead
+  const regexCache = new Map();
+  const MAX_REGEX_LENGTH = 500;
+  const MAX_TEST_STRING_LENGTH = 10000;
+
+  function getCompiledRegex(pattern) {
+    if (regexCache.has(pattern)) {
+      return regexCache.get(pattern);
+    }
+
+    // SECURITY: Reject overly complex regex patterns to prevent ReDoS
+    if (pattern.length > MAX_REGEX_LENGTH) {
+      log('warn', 'Regex pattern too long, skipping', { length: pattern.length, max: MAX_REGEX_LENGTH });
+      return null;
+    }
+
+    // Basic ReDoS pattern detection (nested quantifiers)
+    const redosPatterns = [
+      /(\\+|\\*|\\{[^}]+\\})\\s*\\??\\s*(\\+|\\*|\\{[^}]+\\})/,  // Nested quantifiers
+      /\\([^)]*(?:\\+|\\*)[^)]*\\)\\s*(?:\\+|\\*)/,               // Quantified groups with quantifiers
+    ];
+    for (const redosPattern of redosPatterns) {
+      if (redosPattern.test(pattern)) {
+        log('warn', 'Potentially dangerous regex pattern detected (ReDoS risk), skipping', { pattern });
+        return null;
+      }
+    }
+
+    try {
+      const regex = new RegExp(pattern);
+      regexCache.set(pattern, regex);
+      return regex;
+    } catch (e) {
+      log('warn', 'Invalid regex pattern', { pattern, error: e.message });
+      regexCache.set(pattern, null);
+      return null;
+    }
+  }
+
   function matchesFilter(hook, eventData) {
     if (!hook.filter) return true;
 
@@ -104,13 +143,17 @@ const TWEAKCC_EVENTS = (function() {
       if (!hook.filter.messageTypes.includes(eventData.messageType)) return false;
     }
 
-    // Regex filter on stringified data
+    // Regex filter on stringified data (with safety checks)
     if (hook.filter.regex) {
-      try {
-        const regex = new RegExp(hook.filter.regex);
-        if (!regex.test(JSON.stringify(eventData))) return false;
-      } catch (e) {
-        log('warn', 'Invalid regex filter', { hookId: hook.id, regex: hook.filter.regex });
+      const regex = getCompiledRegex(hook.filter.regex);
+      if (regex) {
+        const testString = JSON.stringify(eventData);
+        // SECURITY: Limit test string length to prevent long-running matches
+        if (testString.length > MAX_TEST_STRING_LENGTH) {
+          log('warn', 'Event data too large for regex filter, skipping regex check', { hookId: hook.id });
+        } else {
+          if (!regex.test(testString)) return false;
+        }
       }
     }
 
@@ -166,18 +209,23 @@ const TWEAKCC_EVENTS = (function() {
 
     try {
       // Build environment variables
+      // SECURITY: Base64 encode JSON data to prevent shell injection
+      const jsonData = JSON.stringify(eventData);
+      const base64Data = Buffer.from(jsonData).toString('base64');
+
       const baseEnv = {
         ...process.env,
         ...(hook.env || {}),
         TWEAKCC_EVENT: event,
-        TWEAKCC_DATA: JSON.stringify(eventData),
+        TWEAKCC_DATA: jsonData,
+        TWEAKCC_DATA_BASE64: base64Data,
         TWEAKCC_HOOK_ID: hook.id,
         TWEAKCC_HOOK_NAME: hook.name || hook.id
       };
 
-      // Add tool-specific env vars
-      if (eventData.toolName) baseEnv.TWEAKCC_TOOL_NAME = eventData.toolName;
-      if (eventData.toolId) baseEnv.TWEAKCC_TOOL_ID = eventData.toolId;
+      // Add tool-specific env vars (these are safe - controlled values)
+      if (eventData.toolName) baseEnv.TWEAKCC_TOOL_NAME = String(eventData.toolName);
+      if (eventData.toolId) baseEnv.TWEAKCC_TOOL_ID = String(eventData.toolId);
 
       const execOptions = {
         env: baseEnv,
@@ -195,22 +243,38 @@ const TWEAKCC_EVENTS = (function() {
           });
           child.unref();
         } else {
-          // Blocking execution with retry support
-          const runCmd = () => {
-            return new Promise((resolve, reject) => {
-              try {
-                execSync(hook.command, { ...execOptions, stdio: 'ignore' });
-                resolve();
-              } catch (e) {
-                reject(e);
-              }
-            });
+          // Blocking execution with retry support (synchronous)
+          const runCmdSync = () => {
+            execSync(hook.command, { ...execOptions, stdio: 'ignore' });
           };
 
           if (hook.onError === 'retry') {
-            executeWithRetry(hook, runCmd).catch(handleError);
+            // Synchronous retry with exponential backoff
+            const maxRetries = hook.retryCount ?? 3;
+            const retryDelay = hook.retryDelay ?? 1000;
+            let attempt = 0;
+            while (attempt <= maxRetries) {
+              try {
+                runCmdSync();
+                break;
+              } catch (e) {
+                attempt++;
+                if (attempt > maxRetries) {
+                  handleError(e);
+                  break;
+                }
+                log('warn', 'Hook failed, retrying...', { hookId: hook.id, attempt, maxRetries });
+                // Synchronous sleep using Atomics (blocks event loop intentionally for sync mode)
+                const waitMs = retryDelay * Math.pow(2, attempt - 1);
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+              }
+            }
           } else {
-            runCmd().catch(handleError);
+            try {
+              runCmdSync();
+            } catch (e) {
+              handleError(e);
+            }
           }
         }
       } else if (hook.type === 'webhook' && hook.webhook) {
@@ -774,7 +838,7 @@ export const findMcpConnectLocation = (
  *   - MCP tool invocations
  */
 export const writeMcpEvents = (oldFile: string): string | null => {
-  let newFile = oldFile;
+  const newFile = oldFile;
 
   // MCP server connection pattern
   // Look for: mcpClients.map or similar patterns that iterate MCP clients

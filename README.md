@@ -253,6 +253,7 @@ Hooks receive these environment variables:
 |----------|-------------|
 | `TWEAKCC_EVENT` | Event name |
 | `TWEAKCC_DATA` | JSON event data |
+| `TWEAKCC_DATA_BASE64` | Base64-encoded JSON event data (safer for shell scripts) |
 | `TWEAKCC_HOOK_ID` | Hook ID |
 | `TWEAKCC_HOOK_NAME` | Hook name |
 | `TWEAKCC_TOOL_NAME` | Tool name (for tool events) |
@@ -412,6 +413,56 @@ fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, redacted);
 | `priority` | number | Execution order (lower = first, default: 100) |
 | `timeout` | number | Max execution time in ms (default: 5000) |
 | `filter.tools` | string[] | Only apply to specific tools |
+
+### Security Considerations
+
+> [!warning]
+> **Hooks and transforms execute arbitrary code.** Only use hooks from sources you trust.
+
+#### Shell Command Execution
+
+When using `type: "command"` hooks, be aware that:
+
+1. **Commands run in a shell (`sh -c`)**: This allows shell features like pipes and redirects, but also means special characters are interpreted.
+
+2. **Environment variables are passed to the shell**: The `TWEAKCC_DATA` variable contains JSON event data. To avoid shell injection issues:
+   - Use `TWEAKCC_DATA_BASE64` (base64-encoded) for safer parsing in scripts
+   - Decode in your script: `echo "$TWEAKCC_DATA_BASE64" | base64 -d | jq .`
+
+3. **Timeout protection**: Commands are killed after `timeout` ms (default: 5000)
+
+#### Transform Script Execution
+
+Transform scripts:
+
+1. **Run as Node.js processes** with the same permissions as Claude Code
+2. **Use secure temp files**: Input/output files are created in a user-only directory (0700 permissions)
+3. **Have timeouts enforced**: Scripts exceeding `timeout` are terminated
+4. **Should validate input**: Always validate data read from `TWEAKCC_INPUT_FILE`
+
+#### Webhook Security
+
+When using `type: "webhook"` hooks:
+
+1. **No domain restrictions by default**: Webhooks can target any URL, including internal services
+2. **HTTPS recommended**: Use HTTPS endpoints when possible
+3. **Sensitive data exposure**: Event data (including tool inputs/outputs) is sent to webhook URLs
+
+#### Regex Filters
+
+The `filter.regex` option has built-in protections:
+
+1. **Length limit**: Patterns longer than 500 characters are rejected
+2. **ReDoS detection**: Patterns with dangerous nested quantifiers are blocked
+3. **Test string limit**: Event data larger than 10KB skips regex filtering
+
+#### Best Practices
+
+1. **Review hook scripts before use**: Especially from third-party sources
+2. **Use minimal permissions**: Only enable hooks you need
+3. **Prefer webhooks for sensitive data**: Send to controlled endpoints rather than shell commands
+4. **Test hooks safely first**: Use `tweakcc hooks test <event>` before applying
+5. **Enable logging**: Set `logging.enabled: true` to audit hook activity
 
 ## FAQ
 

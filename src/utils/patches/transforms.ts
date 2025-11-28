@@ -41,7 +41,7 @@ export const generateTransformRunnerCode = (
 // ============================================================================
 const TWEAKCC_TRANSFORMS = (function() {
   const { execSync, spawnSync } = ${requireFunc}('child_process');
-  const { readFileSync, writeFileSync, mkdirSync, unlinkSync } = ${requireFunc}('fs');
+  const { readFileSync, writeFileSync, mkdirSync, mkdtempSync, unlinkSync, rmdirSync, chmodSync } = ${requireFunc}('fs');
   const { join, dirname } = ${requireFunc}('path');
   const { homedir, tmpdir } = ${requireFunc}('os');
   const { randomUUID } = ${requireFunc}('crypto');
@@ -78,14 +78,22 @@ const TWEAKCC_TRANSFORMS = (function() {
     const scriptPath = resolvePath(transformConfig.script);
     const timeout = transformConfig.timeout || 5000;
 
-    try {
-      // Write input to a temp file (more reliable than stdin for sync execution)
-      const tempDir = join(tmpdir(), 'tweakcc-transforms');
-      mkdirSync(tempDir, { recursive: true });
-      const inputFile = join(tempDir, randomUUID() + '.json');
-      const outputFile = join(tempDir, randomUUID() + '.json');
+    let secureTempDir = null;
+    let inputFile = null;
+    let outputFile = null;
 
-      writeFileSync(inputFile, JSON.stringify(inputData));
+    try {
+      // SECURITY: Create a secure temp directory with restricted permissions (owner only)
+      const baseTempDir = join(tmpdir(), 'tweakcc-transforms-');
+      secureTempDir = mkdtempSync(baseTempDir);
+      // Set restrictive permissions (0700 = owner read/write/execute only)
+      chmodSync(secureTempDir, 0o700);
+
+      inputFile = join(secureTempDir, 'input.json');
+      outputFile = join(secureTempDir, 'output.json');
+
+      // Write input file with restrictive permissions
+      writeFileSync(inputFile, JSON.stringify(inputData), { mode: 0o600 });
 
       // Execute the script
       // The script should read from INPUT_FILE, write to OUTPUT_FILE
@@ -118,11 +126,16 @@ const TWEAKCC_TRANSFORMS = (function() {
         }
       } finally {
         // Cleanup temp files
-        try { unlinkSync(inputFile); } catch {}
-        try { unlinkSync(outputFile); } catch {}
+        try { if (inputFile) unlinkSync(inputFile); } catch {}
+        try { if (outputFile) unlinkSync(outputFile); } catch {}
+        try { if (secureTempDir) rmdirSync(secureTempDir); } catch {}
       }
     } catch (err) {
       log('error', 'Transform execution failed', { id: transformConfig.id, error: err.message });
+      // Cleanup on error
+      try { if (inputFile) unlinkSync(inputFile); } catch {}
+      try { if (outputFile) unlinkSync(outputFile); } catch {}
+      try { if (secureTempDir) rmdirSync(secureTempDir); } catch {}
       return inputData; // Return original on error
     }
   }

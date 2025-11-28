@@ -24,6 +24,7 @@ EVENT="${TWEAKCC_EVENT:-unknown}"
 echo "[$TIMESTAMP] $EVENT: $TOOL_NAME" >> "$LOG_FILE"
 
 # Optionally log full data for debugging
+# SECURITY: Use base64-encoded data for safer logging
 if [ "$TWEAKCC_DEBUG" = "1" ]; then
-    echo "  Data: $TWEAKCC_DATA" >> "$LOG_FILE"
+    echo "  Data: $(echo "$TWEAKCC_DATA_BASE64" | base64 -d)" >> "$LOG_FILE"
 fi
