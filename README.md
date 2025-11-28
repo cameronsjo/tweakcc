@@ -464,6 +464,353 @@ The `filter.regex` option has built-in protections:
 4. **Test hooks safely first**: Use `tweakcc hooks test <event>` before applying
 5. **Enable logging**: Set `logging.enabled: true` to audit hook activity
 
+### Troubleshooting Events & Transforms
+
+<details>
+<summary><strong>My hooks aren't firing</strong></summary>
+
+1. **Check if events are enabled**:
+   ```json
+   { "settings": { "events": { "enabled": true, ... } } }
+   ```
+
+2. **Verify the hook is enabled**:
+   ```json
+   { "id": "my-hook", "enabled": true, ... }
+   ```
+
+3. **Re-apply patches** after config changes:
+   ```bash
+   npx tweakcc --apply
+   ```
+
+4. **Check the event log** (if logging enabled):
+   ```bash
+   tail -f ~/.tweakcc/events.log
+   ```
+
+5. **Test the hook manually**:
+   ```bash
+   npx tweakcc hooks test tool:before
+   ```
+
+</details>
+
+<details>
+<summary><strong>Hook command fails silently</strong></summary>
+
+1. **Test your command directly**:
+   ```bash
+   TWEAKCC_EVENT=test TWEAKCC_DATA='{}' your-command-here
+   ```
+
+2. **Check for path issues** - use absolute paths:
+   ```json
+   { "command": "/usr/local/bin/my-script.sh" }
+   ```
+
+3. **Enable debug logging**:
+   ```bash
+   TWEAKCC_DEBUG=1 claude
+   ```
+
+4. **Check hook timeout** - default is 5000ms:
+   ```json
+   { "timeout": 10000 }
+   ```
+
+</details>
+
+<details>
+<summary><strong>Patterns not matching after Claude Code update</strong></summary>
+
+1. **Run the pattern analyzer**:
+   ```bash
+   npx tweakcc --analyze
+   ```
+
+2. **Check for broken patterns** (marked with ✗):
+   ```bash
+   npx tweakcc --analyze --verbose
+   ```
+
+3. **Search for alternative patterns**:
+   ```bash
+   npx tweakcc --analyze --search "tool_result"
+   ```
+
+4. **Report issues** at [tweakcc GitHub](https://github.com/Piebald-AI/tweakcc/issues) with:
+   - Claude Code version (`claude --version`)
+   - Pattern analyzer output
+
+</details>
+
+<details>
+<summary><strong>Transform script not modifying data</strong></summary>
+
+1. **Verify script writes to output file**:
+   ```javascript
+   const fs = require('fs');
+   const input = JSON.parse(fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8'));
+   // Modify input.data
+   fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, JSON.stringify(input));
+   ```
+
+2. **Check script permissions**:
+   ```bash
+   chmod +x ~/.tweakcc/transforms/my-transform.js
+   ```
+
+3. **Test script standalone**:
+   ```bash
+   echo '{"data":"test"}' > /tmp/input.json
+   TWEAKCC_INPUT_FILE=/tmp/input.json TWEAKCC_OUTPUT_FILE=/tmp/output.json node your-script.js
+   cat /tmp/output.json
+   ```
+
+4. **Check for JSON parsing errors** - input is always JSON wrapped in `{ data, context, type }`.
+
+</details>
+
+<details>
+<summary><strong>Performance impact from hooks</strong></summary>
+
+1. **Use async hooks** (default) for non-blocking execution:
+   ```json
+   { "async": true }
+   ```
+
+2. **Add filters** to reduce hook invocations:
+   ```json
+   { "filter": { "tools": ["Bash"] } }
+   ```
+
+3. **Avoid regex filters on large data** - they have a 10KB limit for safety.
+
+4. **Use webhooks** instead of commands for complex processing - they're fire-and-forget.
+
+</details>
+
+### Common Patterns Cookbook
+
+Real-world examples for common use cases.
+
+#### Audit All File Changes
+
+Log every file modification Claude makes:
+
+```json
+{
+  "id": "audit-file-changes",
+  "events": ["tool:after"],
+  "type": "command",
+  "command": "echo \"$(date -Iseconds) $TWEAKCC_TOOL_NAME\" >> ~/.tweakcc/file-audit.log",
+  "filter": { "tools": ["Edit", "Write", "MultiEdit"] },
+  "enabled": true
+}
+```
+
+#### Slack Notification on Completion
+
+Send a Slack message when Claude finishes:
+
+```json
+{
+  "id": "slack-notify",
+  "events": "stream:end",
+  "type": "webhook",
+  "webhook": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+  "enabled": true
+}
+```
+
+The webhook receives JSON with event data. Configure your Slack webhook to accept it.
+
+#### Block Dangerous Bash Commands
+
+Abort if Claude tries to run risky commands:
+
+```json
+{
+  "id": "block-dangerous",
+  "events": "tool:before",
+  "type": "script",
+  "script": "~/.tweakcc/hooks/block-dangerous.js",
+  "filter": { "tools": ["Bash"] },
+  "async": false,
+  "onError": "abort",
+  "enabled": true
+}
+```
+
+```javascript
+// ~/.tweakcc/hooks/block-dangerous.js
+const dangerous = ['rm -rf /', 'sudo rm', ':(){:|:&};:', 'dd if=', '> /dev/sda'];
+const data = JSON.parse(process.env.TWEAKCC_DATA || '{}');
+const cmd = data.input?.command || '';
+
+if (dangerous.some(d => cmd.includes(d))) {
+  console.error(`BLOCKED: ${cmd}`);
+  process.exit(1); // Non-zero exit triggers onError: "abort"
+}
+```
+
+#### Cost Tracking with SQLite
+
+Record token usage to a database:
+
+```json
+{
+  "id": "cost-tracker",
+  "events": "stream:end",
+  "type": "script",
+  "script": "~/.tweakcc/hooks/cost-tracker.js",
+  "enabled": true
+}
+```
+
+```javascript
+// ~/.tweakcc/hooks/cost-tracker.js
+const Database = require('better-sqlite3'); // npm install better-sqlite3
+const db = new Database(process.env.HOME + '/.tweakcc/costs.db');
+
+db.exec(`CREATE TABLE IF NOT EXISTS usage (
+  id INTEGER PRIMARY KEY,
+  timestamp TEXT,
+  event TEXT,
+  tokens_in INTEGER,
+  tokens_out INTEGER
+)`);
+
+const data = JSON.parse(process.env.TWEAKCC_DATA || '{}');
+db.prepare(`INSERT INTO usage (timestamp, event, tokens_in, tokens_out) VALUES (?, ?, ?, ?)`)
+  .run(new Date().toISOString(), process.env.TWEAKCC_EVENT, data.tokensIn || 0, data.tokensOut || 0);
+```
+
+#### Redact Secrets from Output (Transform)
+
+Remove API keys from tool output before Claude sees it:
+
+```json
+{
+  "settings": {
+    "transforms": {
+      "enabled": true,
+      "transforms": [{
+        "id": "redact-secrets",
+        "transform": "tool:output",
+        "script": "~/.tweakcc/transforms/redact-secrets.js",
+        "priority": 1,
+        "enabled": true
+      }]
+    }
+  }
+}
+```
+
+```javascript
+// ~/.tweakcc/transforms/redact-secrets.js
+const fs = require('fs');
+const input = JSON.parse(fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8'));
+
+const patterns = [
+  [/sk-[a-zA-Z0-9]{20,}/g, 'sk-[REDACTED]'],           // OpenAI
+  [/ghp_[a-zA-Z0-9]{36}/g, 'ghp_[REDACTED]'],          // GitHub PAT
+  [/AKIA[0-9A-Z]{16}/g, 'AKIA[REDACTED]'],             // AWS Access Key
+  [/-----BEGIN.*PRIVATE KEY-----[\s\S]*?-----END.*PRIVATE KEY-----/g, '[PRIVATE KEY REDACTED]'],
+];
+
+let data = typeof input.data === 'string' ? input.data : JSON.stringify(input.data);
+for (const [pattern, replacement] of patterns) {
+  data = data.replace(pattern, replacement);
+}
+input.data = data;
+
+fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, JSON.stringify(input));
+```
+
+#### Add Custom Context to Prompts (Transform)
+
+Inject project-specific context into every prompt:
+
+```json
+{
+  "id": "inject-context",
+  "transform": "prompt:before",
+  "script": "~/.tweakcc/transforms/inject-context.js",
+  "enabled": true
+}
+```
+
+```javascript
+// ~/.tweakcc/transforms/inject-context.js
+const fs = require('fs');
+const path = require('path');
+
+const input = JSON.parse(fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8'));
+
+// Add project context if .claude-context file exists
+const contextFile = path.join(process.cwd(), '.claude-context');
+if (fs.existsSync(contextFile)) {
+  const context = fs.readFileSync(contextFile, 'utf8');
+  input.data = `[Project Context]\n${context}\n\n[User Message]\n${input.data}`;
+}
+
+fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, JSON.stringify(input));
+```
+
+#### Real-time Dashboard (WebSocket)
+
+Stream events to a dashboard:
+
+```json
+{
+  "id": "dashboard-stream",
+  "events": ["tool:before", "tool:after", "stream:chunk"],
+  "type": "webhook",
+  "webhook": "http://localhost:3000/api/events",
+  "enabled": true
+}
+```
+
+Then create a simple server:
+
+```javascript
+// dashboard-server.js
+const http = require('http');
+const WebSocket = require('ws'); // npm install ws
+
+const wss = new WebSocket.Server({ noServer: true });
+const clients = new Set();
+
+wss.on('connection', ws => {
+  clients.add(ws);
+  ws.on('close', () => clients.delete(ws));
+});
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/api/events') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      // Broadcast to all WebSocket clients
+      clients.forEach(client => client.send(body));
+      res.writeHead(200);
+      res.end('OK');
+    });
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+
+server.on('upgrade', (req, socket, head) => {
+  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+});
+
+server.listen(3000, () => console.log('Dashboard at http://localhost:3000'));
+```
+
 ## FAQ
 
 #### System prompts

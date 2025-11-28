@@ -44,6 +44,13 @@ Node.js webhook server for collecting events.
   - `GET /events` - View recent events (JSON)
   - `GET /health` - Health check
 
+### `block-dangerous.js`
+Blocks potentially destructive Bash commands before execution.
+- **Events**: `tool:before` (filtered to Bash only)
+- **Mode**: Synchronous with `onError: "abort"`
+- **Blocked patterns**: `rm -rf /`, fork bombs, `dd` to devices, privilege escalation
+- **Warning patterns**: `sudo`, `chmod 777`, `curl`/`wget` downloads
+
 ## Example Config
 
 Full `config.json` with multiple hooks:
@@ -88,6 +95,17 @@ Full `config.json` with multiple hooks:
           "type": "webhook",
           "webhook": "http://localhost:9000/events",
           "enabled": false
+        },
+        {
+          "id": "block-dangerous",
+          "name": "Block dangerous commands",
+          "events": "tool:before",
+          "type": "script",
+          "script": "~/.tweakcc/hooks/block-dangerous.js",
+          "filter": { "tools": ["Bash"] },
+          "async": false,
+          "onError": "abort",
+          "enabled": true
         }
       ],
       "logging": {
