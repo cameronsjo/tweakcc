@@ -132,6 +132,685 @@ In particular, you may run into a situation where you have a tweakcc-patched (or
 
 To break out of this loop you can install a different version of Claude Code, which will cause tweakcc to discard its existing backup and take a fresh backup of the new `claude` file.  Or you can simply delete tweakcc's backup file (located at `~/.tweakcc/cli.backup.js` or `~/.tweakcc/native-binary.backup`).  If you do delete `cli.backup.js` or `native-binary.backup`, make sure you reinstall Claude Code _before_ you run tweakcc again, because if your `claude` is still the modified version, it will get into the same loop again.
 
+## Events & Transforms (Beta)
+
+> [!note]
+> This is an experimental feature. Pattern matching is verified against Claude Code 2.0.55.
+
+tweakcc can inject custom event hooks and data transforms into Claude Code, allowing you to:
+
+- **Events**: React to Claude Code actions (tool execution, messages, thinking, etc.)
+- **Transforms**: Modify data before it's sent/received (prompts, responses, tool I/O)
+
+### CLI Commands
+
+Manage hooks from the command line:
+
+```bash
+# List all configured hooks
+npx tweakcc hooks list
+
+# Add a quick hook
+npx tweakcc hooks add "tool:after" "echo 'Tool executed!' >> ~/cc-log.txt"
+npx tweakcc hooks add "tool:before" "./my-hook.sh" --filter-tool Bash
+
+# Test hooks for an event
+npx tweakcc hooks test "tool:after"
+
+# Enable/disable hooks
+npx tweakcc hooks enable <hook-id>
+npx tweakcc hooks disable <hook-id>
+
+# Remove a hook
+npx tweakcc hooks remove <hook-id>
+```
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `tool:before` | Before a tool executes |
+| `tool:after` | After a tool completes |
+| `message:user` | User message received |
+| `message:assistant:start` | Assistant starts responding |
+| `thinking:start` | Thinking block starts |
+| `thinking:update` | Thinking content streams |
+| `stream:start` | Response stream starts |
+| `stream:chunk` | Text chunk received |
+| `stream:end` | Response stream ends |
+| `session:start` | Claude Code session starts |
+| `custom:*` | Custom user events (via `/emit`) |
+
+### Configuration Example
+
+Add to your `~/.tweakcc/config.json`:
+
+```json
+{
+  "settings": {
+    "events": {
+      "enabled": true,
+      "hooks": [
+        {
+          "id": "log-tools",
+          "name": "Log tool usage",
+          "events": ["tool:before", "tool:after"],
+          "type": "command",
+          "command": "echo \"$TWEAKCC_EVENT: $TWEAKCC_TOOL_NAME\" >> ~/cc-tools.log",
+          "enabled": true,
+          "filter": {
+            "tools": ["Bash", "Edit", "Write"]
+          }
+        },
+        {
+          "id": "webhook-notify",
+          "name": "Notify on completion",
+          "events": "stream:end",
+          "type": "webhook",
+          "webhook": "http://localhost:8080/notify",
+          "enabled": true,
+          "onError": "retry",
+          "retryCount": 3
+        }
+      ],
+      "logging": {
+        "enabled": true,
+        "logFile": "~/.tweakcc/events.log",
+        "logLevel": "info"
+      }
+    }
+  }
+}
+```
+
+### Hook Configuration Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `id` | string | Unique identifier |
+| `name` | string | Human-readable name |
+| `events` | string\|string[] | Events to listen for |
+| `type` | `command`\|`webhook`\|`script` | Handler type |
+| `command` | string | Shell command (for `type: command`) |
+| `webhook` | string | URL to POST to (for `type: webhook`) |
+| `script` | string | Path to Node.js script (for `type: script`) |
+| `enabled` | boolean | Whether hook is active |
+| `async` | boolean | Non-blocking execution (default: true) |
+| `timeout` | number | Timeout in ms (default: 5000) |
+| `onError` | `continue`\|`abort`\|`retry` | Error handling strategy |
+| `retryCount` | number | Retries if `onError: retry` (default: 3) |
+| `filter.tools` | string[] | Only trigger for specific tools |
+| `filter.toolsExclude` | string[] | Exclude specific tools |
+| `filter.regex` | string | Only trigger if data matches regex |
+| `env` | object | Additional environment variables |
+| `cwd` | string | Working directory |
+
+### Environment Variables
+
+Hooks receive these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `TWEAKCC_EVENT` | Event name |
+| `TWEAKCC_DATA` | JSON event data |
+| `TWEAKCC_DATA_BASE64` | Base64-encoded JSON event data (safer for shell scripts) |
+| `TWEAKCC_HOOK_ID` | Hook ID |
+| `TWEAKCC_HOOK_NAME` | Hook name |
+| `TWEAKCC_TOOL_NAME` | Tool name (for tool events) |
+| `TWEAKCC_TOOL_ID` | Tool use ID (for tool events) |
+
+### Testing Events
+
+Use the `/emit` slash command inside Claude Code to test your hooks:
+
+```
+/emit custom:test {"message": "Hello from custom event!"}
+```
+
+### Analyzing Patterns
+
+Verify that event patterns exist in your Claude Code installation:
+
+```bash
+# Full analysis
+NPM_PREFIX=/path/to/npm npx tweakcc --analyze
+
+# Search for specific patterns
+npx tweakcc --analyze --search "tool_use"
+```
+
+### Using with Claude Agent SDK
+
+tweakcc patches work seamlessly with the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python). The SDK spawns Claude Code as a subprocess, which runs the patched cli.js:
+
+```
+┌─────────────────────────────────────┐
+│     Claude Agent SDK (Python/TS)    │  ← Your application
+├─────────────────────────────────────┤
+│          Claude Code CLI            │  ← Runtime
+├─────────────────────────────────────┤
+│       tweakcc patches (cli.js)      │  ← Events fire here
+└─────────────────────────────────────┘
+```
+
+**Example: Agent telemetry pipeline**
+
+```python
+# agent.py - Your SDK code runs normally
+from claude_code_sdk import Claude
+
+async def main():
+    async with Claude() as client:
+        result = await client.query("Fix the bug in main.py")
+```
+
+```json
+// ~/.tweakcc/config.json - Hooks capture everything
+{
+  "settings": {
+    "events": {
+      "enabled": true,
+      "hooks": [
+        {
+          "id": "agent-telemetry",
+          "events": ["tool:before", "tool:after"],
+          "type": "webhook",
+          "webhook": "http://localhost:9000/telemetry",
+          "enabled": true
+        }
+      ]
+    }
+  }
+}
+```
+
+**SDK-friendly use cases:**
+
+| Use Case | Event | Description |
+|----------|-------|-------------|
+| Agent telemetry | `tool:after` | Log all tool calls to a database |
+| Cost tracking | `stream:end` | Track token usage per agent run |
+| Audit logging | `tool:before` | Record inputs before execution |
+| Real-time dashboard | `stream:chunk` | Pipe responses to a websocket |
+| Safety monitoring | `tool:before` | Alert on specific Bash commands |
+| Custom analytics | `session:start` | Track agent session lifecycle |
+
+The SDK doesn't need any modifications—hooks are injected at the Claude Code layer and fire automatically.
+
+### Transforms (Data Modification)
+
+Unlike events (fire-and-forget), **transforms** can intercept and modify data synchronously.
+
+> [!warning]
+> Transforms are more experimental than events. Some patterns may not match your Claude Code version.
+
+#### Transform Types
+
+| Transform | Description |
+|-----------|-------------|
+| `prompt:before` | Modify user prompt before sending to API |
+| `prompt:system` | Modify system prompt |
+| `response:before` | Modify response before displaying |
+| `tool:input` | Modify tool input before execution |
+| `tool:output` | Modify tool output before returning |
+
+#### How Transforms Work
+
+Transforms run synchronously via external scripts:
+1. Input is written to a temp file (`TWEAKCC_INPUT_FILE`)
+2. Your script reads, modifies, and writes to output file (`TWEAKCC_OUTPUT_FILE`)
+3. Modified data is used by Claude Code
+
+#### Transform Configuration
+
+```json
+{
+  "settings": {
+    "transforms": {
+      "enabled": true,
+      "transforms": [
+        {
+          "id": "redact-secrets",
+          "name": "Redact API keys from tool output",
+          "transform": "tool:output",
+          "script": "~/.tweakcc/transforms/redact-secrets.js",
+          "enabled": true,
+          "priority": 10,
+          "timeout": 5000,
+          "filter": {
+            "tools": ["Bash", "Read"]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Example Transform Script
+
+```javascript
+#!/usr/bin/env node
+// ~/.tweakcc/transforms/redact-secrets.js
+const fs = require('fs');
+
+const input = fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8');
+
+// Redact API keys
+const redacted = input.replace(/sk-[a-zA-Z0-9]{20,}/g, 'sk-[REDACTED]');
+
+fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, redacted);
+```
+
+#### Transform Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `id` | string | Unique identifier |
+| `transform` | string | Transform type |
+| `script` | string | Path to transform script |
+| `enabled` | boolean | Whether active |
+| `priority` | number | Execution order (lower = first, default: 100) |
+| `timeout` | number | Max execution time in ms (default: 5000) |
+| `filter.tools` | string[] | Only apply to specific tools |
+
+### Security Considerations
+
+> [!warning]
+> **Hooks and transforms execute arbitrary code.** Only use hooks from sources you trust.
+
+#### Shell Command Execution
+
+When using `type: "command"` hooks, be aware that:
+
+1. **Commands run in a shell (`sh -c`)**: This allows shell features like pipes and redirects, but also means special characters are interpreted.
+
+2. **Environment variables are passed to the shell**: The `TWEAKCC_DATA` variable contains JSON event data. To avoid shell injection issues:
+   - Use `TWEAKCC_DATA_BASE64` (base64-encoded) for safer parsing in scripts
+   - Decode in your script: `echo "$TWEAKCC_DATA_BASE64" | base64 -d | jq .`
+
+3. **Timeout protection**: Commands are killed after `timeout` ms (default: 5000)
+
+#### Transform Script Execution
+
+Transform scripts:
+
+1. **Run as Node.js processes** with the same permissions as Claude Code
+2. **Use secure temp files**: Input/output files are created in a user-only directory (0700 permissions)
+3. **Have timeouts enforced**: Scripts exceeding `timeout` are terminated
+4. **Should validate input**: Always validate data read from `TWEAKCC_INPUT_FILE`
+
+#### Webhook Security
+
+When using `type: "webhook"` hooks:
+
+1. **No domain restrictions by default**: Webhooks can target any URL, including internal services
+2. **HTTPS recommended**: Use HTTPS endpoints when possible
+3. **Sensitive data exposure**: Event data (including tool inputs/outputs) is sent to webhook URLs
+
+#### Regex Filters
+
+The `filter.regex` option has built-in protections:
+
+1. **Length limit**: Patterns longer than 500 characters are rejected
+2. **ReDoS detection**: Patterns with dangerous nested quantifiers are blocked
+3. **Test string limit**: Event data larger than 10KB skips regex filtering
+
+#### Best Practices
+
+1. **Review hook scripts before use**: Especially from third-party sources
+2. **Use minimal permissions**: Only enable hooks you need
+3. **Prefer webhooks for sensitive data**: Send to controlled endpoints rather than shell commands
+4. **Test hooks safely first**: Use `tweakcc hooks test <event>` before applying
+5. **Enable logging**: Set `logging.enabled: true` to audit hook activity
+
+### Troubleshooting Events & Transforms
+
+<details>
+<summary><strong>My hooks aren't firing</strong></summary>
+
+1. **Check if events are enabled**:
+   ```json
+   { "settings": { "events": { "enabled": true, ... } } }
+   ```
+
+2. **Verify the hook is enabled**:
+   ```json
+   { "id": "my-hook", "enabled": true, ... }
+   ```
+
+3. **Re-apply patches** after config changes:
+   ```bash
+   npx tweakcc --apply
+   ```
+
+4. **Check the event log** (if logging enabled):
+   ```bash
+   tail -f ~/.tweakcc/events.log
+   ```
+
+5. **Test the hook manually**:
+   ```bash
+   npx tweakcc hooks test tool:before
+   ```
+
+</details>
+
+<details>
+<summary><strong>Hook command fails silently</strong></summary>
+
+1. **Test your command directly**:
+   ```bash
+   TWEAKCC_EVENT=test TWEAKCC_DATA='{}' your-command-here
+   ```
+
+2. **Check for path issues** - use absolute paths:
+   ```json
+   { "command": "/usr/local/bin/my-script.sh" }
+   ```
+
+3. **Enable debug logging**:
+   ```bash
+   TWEAKCC_DEBUG=1 claude
+   ```
+
+4. **Check hook timeout** - default is 5000ms:
+   ```json
+   { "timeout": 10000 }
+   ```
+
+</details>
+
+<details>
+<summary><strong>Patterns not matching after Claude Code update</strong></summary>
+
+1. **Run the pattern analyzer**:
+   ```bash
+   npx tweakcc --analyze
+   ```
+
+2. **Check for broken patterns** (marked with ✗):
+   ```bash
+   npx tweakcc --analyze --verbose
+   ```
+
+3. **Search for alternative patterns**:
+   ```bash
+   npx tweakcc --analyze --search "tool_result"
+   ```
+
+4. **Report issues** at [tweakcc GitHub](https://github.com/Piebald-AI/tweakcc/issues) with:
+   - Claude Code version (`claude --version`)
+   - Pattern analyzer output
+
+</details>
+
+<details>
+<summary><strong>Transform script not modifying data</strong></summary>
+
+1. **Verify script writes to output file**:
+   ```javascript
+   const fs = require('fs');
+   const input = JSON.parse(fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8'));
+   // Modify input.data
+   fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, JSON.stringify(input));
+   ```
+
+2. **Check script permissions**:
+   ```bash
+   chmod +x ~/.tweakcc/transforms/my-transform.js
+   ```
+
+3. **Test script standalone**:
+   ```bash
+   echo '{"data":"test"}' > /tmp/input.json
+   TWEAKCC_INPUT_FILE=/tmp/input.json TWEAKCC_OUTPUT_FILE=/tmp/output.json node your-script.js
+   cat /tmp/output.json
+   ```
+
+4. **Check for JSON parsing errors** - input is always JSON wrapped in `{ data, context, type }`.
+
+</details>
+
+<details>
+<summary><strong>Performance impact from hooks</strong></summary>
+
+1. **Use async hooks** (default) for non-blocking execution:
+   ```json
+   { "async": true }
+   ```
+
+2. **Add filters** to reduce hook invocations:
+   ```json
+   { "filter": { "tools": ["Bash"] } }
+   ```
+
+3. **Avoid regex filters on large data** - they have a 10KB limit for safety.
+
+4. **Use webhooks** instead of commands for complex processing - they're fire-and-forget.
+
+</details>
+
+### Common Patterns Cookbook
+
+Real-world examples for common use cases.
+
+#### Audit All File Changes
+
+Log every file modification Claude makes:
+
+```json
+{
+  "id": "audit-file-changes",
+  "events": ["tool:after"],
+  "type": "command",
+  "command": "echo \"$(date -Iseconds) $TWEAKCC_TOOL_NAME\" >> ~/.tweakcc/file-audit.log",
+  "filter": { "tools": ["Edit", "Write", "MultiEdit"] },
+  "enabled": true
+}
+```
+
+#### Slack Notification on Completion
+
+Send a Slack message when Claude finishes:
+
+```json
+{
+  "id": "slack-notify",
+  "events": "stream:end",
+  "type": "webhook",
+  "webhook": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+  "enabled": true
+}
+```
+
+The webhook receives JSON with event data. Configure your Slack webhook to accept it.
+
+#### Block Dangerous Bash Commands
+
+Abort if Claude tries to run risky commands:
+
+```json
+{
+  "id": "block-dangerous",
+  "events": "tool:before",
+  "type": "script",
+  "script": "~/.tweakcc/hooks/block-dangerous.js",
+  "filter": { "tools": ["Bash"] },
+  "async": false,
+  "onError": "abort",
+  "enabled": true
+}
+```
+
+```javascript
+// ~/.tweakcc/hooks/block-dangerous.js
+const dangerous = ['rm -rf /', 'sudo rm', ':(){:|:&};:', 'dd if=', '> /dev/sda'];
+const data = JSON.parse(process.env.TWEAKCC_DATA || '{}');
+const cmd = data.input?.command || '';
+
+if (dangerous.some(d => cmd.includes(d))) {
+  console.error(`BLOCKED: ${cmd}`);
+  process.exit(1); // Non-zero exit triggers onError: "abort"
+}
+```
+
+#### Cost Tracking with SQLite
+
+Record token usage to a database:
+
+```json
+{
+  "id": "cost-tracker",
+  "events": "stream:end",
+  "type": "script",
+  "script": "~/.tweakcc/hooks/cost-tracker.js",
+  "enabled": true
+}
+```
+
+```javascript
+// ~/.tweakcc/hooks/cost-tracker.js
+const Database = require('better-sqlite3'); // npm install better-sqlite3
+const db = new Database(process.env.HOME + '/.tweakcc/costs.db');
+
+db.exec(`CREATE TABLE IF NOT EXISTS usage (
+  id INTEGER PRIMARY KEY,
+  timestamp TEXT,
+  event TEXT,
+  tokens_in INTEGER,
+  tokens_out INTEGER
+)`);
+
+const data = JSON.parse(process.env.TWEAKCC_DATA || '{}');
+db.prepare(`INSERT INTO usage (timestamp, event, tokens_in, tokens_out) VALUES (?, ?, ?, ?)`)
+  .run(new Date().toISOString(), process.env.TWEAKCC_EVENT, data.tokensIn || 0, data.tokensOut || 0);
+```
+
+#### Redact Secrets from Output (Transform)
+
+Remove API keys from tool output before Claude sees it:
+
+```json
+{
+  "settings": {
+    "transforms": {
+      "enabled": true,
+      "transforms": [{
+        "id": "redact-secrets",
+        "transform": "tool:output",
+        "script": "~/.tweakcc/transforms/redact-secrets.js",
+        "priority": 1,
+        "enabled": true
+      }]
+    }
+  }
+}
+```
+
+```javascript
+// ~/.tweakcc/transforms/redact-secrets.js
+const fs = require('fs');
+const input = JSON.parse(fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8'));
+
+const patterns = [
+  [/sk-[a-zA-Z0-9]{20,}/g, 'sk-[REDACTED]'],           // OpenAI
+  [/ghp_[a-zA-Z0-9]{36}/g, 'ghp_[REDACTED]'],          // GitHub PAT
+  [/AKIA[0-9A-Z]{16}/g, 'AKIA[REDACTED]'],             // AWS Access Key
+  [/-----BEGIN.*PRIVATE KEY-----[\s\S]*?-----END.*PRIVATE KEY-----/g, '[PRIVATE KEY REDACTED]'],
+];
+
+let data = typeof input.data === 'string' ? input.data : JSON.stringify(input.data);
+for (const [pattern, replacement] of patterns) {
+  data = data.replace(pattern, replacement);
+}
+input.data = data;
+
+fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, JSON.stringify(input));
+```
+
+#### Add Custom Context to Prompts (Transform)
+
+Inject project-specific context into every prompt:
+
+```json
+{
+  "id": "inject-context",
+  "transform": "prompt:before",
+  "script": "~/.tweakcc/transforms/inject-context.js",
+  "enabled": true
+}
+```
+
+```javascript
+// ~/.tweakcc/transforms/inject-context.js
+const fs = require('fs');
+const path = require('path');
+
+const input = JSON.parse(fs.readFileSync(process.env.TWEAKCC_INPUT_FILE, 'utf8'));
+
+// Add project context if .claude-context file exists
+const contextFile = path.join(process.cwd(), '.claude-context');
+if (fs.existsSync(contextFile)) {
+  const context = fs.readFileSync(contextFile, 'utf8');
+  input.data = `[Project Context]\n${context}\n\n[User Message]\n${input.data}`;
+}
+
+fs.writeFileSync(process.env.TWEAKCC_OUTPUT_FILE, JSON.stringify(input));
+```
+
+#### Real-time Dashboard (WebSocket)
+
+Stream events to a dashboard:
+
+```json
+{
+  "id": "dashboard-stream",
+  "events": ["tool:before", "tool:after", "stream:chunk"],
+  "type": "webhook",
+  "webhook": "http://localhost:3000/api/events",
+  "enabled": true
+}
+```
+
+Then create a simple server:
+
+```javascript
+// dashboard-server.js
+const http = require('http');
+const WebSocket = require('ws'); // npm install ws
+
+const wss = new WebSocket.Server({ noServer: true });
+const clients = new Set();
+
+wss.on('connection', ws => {
+  clients.add(ws);
+  ws.on('close', () => clients.delete(ws));
+});
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/api/events') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      // Broadcast to all WebSocket clients
+      clients.forEach(client => client.send(body));
+      res.writeHead(200);
+      res.end('OK');
+    });
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+
+server.on('upgrade', (req, socket, head) => {
+  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+});
+
+server.listen(3000, () => console.log('Dashboard at http://localhost:3000'));
+```
+
 ## FAQ
 
 #### System prompts

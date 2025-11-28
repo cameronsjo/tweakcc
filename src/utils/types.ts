@@ -109,6 +109,147 @@ export interface Toolset {
   allowedTools: string[] | '*';
 }
 
+// ============================================================================
+// CUSTOM EVENTS HOOK SYSTEM
+// ============================================================================
+
+/**
+ * Event types that can be hooked into
+ */
+export type TweakccEventType =
+  // Tool lifecycle events
+  | 'tool:before' // Before a tool is executed
+  | 'tool:after' // After a tool completes (success or failure)
+  | 'tool:error' // When a tool encounters an error
+  | 'tool:permission' // When tool permission is requested
+
+  // Message lifecycle events
+  | 'message:user' // User message submitted
+  | 'message:assistant:start' // Assistant starts responding
+  | 'message:assistant:end' // Assistant finishes responding
+  | 'message:system' // System message added
+
+  // Thinking/streaming events
+  | 'thinking:start' // Thinking block begins
+  | 'thinking:update' // Thinking content updates
+  | 'thinking:end' // Thinking block ends
+  | 'stream:start' // Response streaming starts
+  | 'stream:chunk' // Stream chunk received
+  | 'stream:end' // Response streaming ends
+
+  // Conversation lifecycle events
+  | 'conversation:start' // New conversation started
+  | 'conversation:resume' // Existing conversation resumed
+  | 'conversation:end' // Conversation ended
+
+  // MCP events
+  | 'mcp:connect' // MCP server connected
+  | 'mcp:disconnect' // MCP server disconnected
+  | 'mcp:tool:call' // MCP tool invoked
+
+  // Session events
+  | 'session:start' // Claude Code session starts
+  | 'session:end' // Claude Code session ends
+
+  // Custom user-defined events
+  | `custom:${string}`;
+
+/**
+ * Handler type for events
+ */
+export type EventHandlerType = 'script' | 'command' | 'webhook';
+
+/**
+ * Error handling strategy for hooks
+ */
+export type HookErrorStrategy = 'continue' | 'abort' | 'retry';
+
+/**
+ * Configuration for a single event hook
+ */
+export interface EventHookConfig {
+  id: string;
+  name?: string; // Human-readable name
+  events: TweakccEventType | TweakccEventType[]; // Events to listen for
+  type: EventHandlerType;
+  script?: string; // Path to JS/TS script (for type: 'script')
+  command?: string; // Shell command to execute (for type: 'command')
+  webhook?: string; // URL to POST to (for type: 'webhook')
+  async?: boolean; // Whether to run async (non-blocking), default: true
+  timeout?: number; // Timeout in ms for commands/webhooks (default: 5000)
+  enabled: boolean;
+
+  // Error handling
+  onError?: HookErrorStrategy; // What to do on error (default: 'continue')
+  retryCount?: number; // Number of retries if onError is 'retry' (default: 3)
+  retryDelay?: number; // Delay between retries in ms (default: 1000)
+
+  // Conditional execution
+  filter?: {
+    tools?: string[]; // Only trigger for specific tools (for tool:* events)
+    toolsExclude?: string[]; // Exclude specific tools
+    messageTypes?: string[]; // Only trigger for specific message types
+    regex?: string; // Only trigger if event data matches regex
+  };
+
+  // Execution environment
+  env?: Record<string, string>; // Additional environment variables
+  cwd?: string; // Working directory for commands
+}
+
+/**
+ * Global events configuration
+ */
+export interface EventsConfig {
+  enabled: boolean; // Master switch for the event system
+  hooks: EventHookConfig[];
+  logging?: {
+    enabled: boolean;
+    logFile?: string; // Path to log file
+    logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  };
+}
+
+// ============================================================================
+// TRANSFORM/MIDDLEWARE PLUGIN SYSTEM
+// ============================================================================
+
+/**
+ * Transform types that can intercept and modify data
+ */
+export type TransformType =
+  | 'prompt:before' // Modify user prompt before sending to API
+  | 'prompt:system' // Modify system prompt
+  | 'response:before' // Modify response before displaying
+  | 'response:stream' // Modify each stream chunk
+  | 'tool:input' // Modify tool input before execution
+  | 'tool:output'; // Modify tool output before returning
+
+/**
+ * Configuration for a transform plugin
+ * Unlike event hooks, transforms are SYNCHRONOUS and can modify data
+ */
+export interface TransformConfig {
+  id: string;
+  name?: string;
+  transform: TransformType;
+  script: string; // Path to JS file that exports a transform function
+  enabled: boolean;
+  priority?: number; // Lower = runs first (default: 100)
+  timeout?: number; // Max execution time in ms (default: 5000)
+  filter?: {
+    tools?: string[]; // Only for tool:input/output
+  };
+}
+
+/**
+ * Global transforms configuration
+ */
+export interface TransformsConfig {
+  enabled: boolean;
+  transforms: TransformConfig[];
+}
+
 export interface Settings {
   themes: Theme[];
   thinkingVerbs: ThinkingVerbsConfig;
@@ -118,6 +259,8 @@ export interface Settings {
   misc: MiscConfig;
   toolsets: Toolset[];
   defaultToolset: string | null;
+  events?: EventsConfig; // Custom events hook system
+  transforms?: TransformsConfig; // Transform/middleware plugin system
 }
 
 export interface TweakccConfig {
@@ -910,6 +1053,18 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   toolsets: [],
   defaultToolset: null,
+  events: {
+    enabled: false,
+    hooks: [],
+    logging: {
+      enabled: false,
+      logLevel: 'info',
+    },
+  },
+  transforms: {
+    enabled: false,
+    transforms: [],
+  },
 };
 
 // Support XDG Base Directory Specification with backward compatibility
