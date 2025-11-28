@@ -110,6 +110,7 @@ Your hook receives these variables:
 |----------|-------------|
 | `TWEAKCC_EVENT` | Event name (e.g., `tool:before`) |
 | `TWEAKCC_DATA` | Full event data as JSON |
+| `TWEAKCC_DATA_BASE64` | Base64-encoded JSON (safer for shell scripts) |
 | `TWEAKCC_HOOK_ID` | Your hook's ID |
 | `TWEAKCC_HOOK_NAME` | Your hook's name |
 | `TWEAKCC_TOOL_NAME` | Tool name (for tool events) |
@@ -121,3 +122,8 @@ Your hook receives these variables:
 2. **Handle errors gracefully** - Use `onError: "continue"` to prevent crashes
 3. **Use filters** - Reduce noise by filtering to specific tools
 4. **Test locally** - Use `tweakcc hooks test <event>` before applying
+5. **Use base64 for safety** - Parse `TWEAKCC_DATA_BASE64` instead of `TWEAKCC_DATA` in shell scripts:
+   ```bash
+   # Safe parsing with jq
+   echo "$TWEAKCC_DATA_BASE64" | base64 -d | jq .toolName
+   ```
